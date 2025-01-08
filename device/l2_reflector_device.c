@@ -39,9 +39,9 @@
 #define NB_MAC_ADDRESS_BYTES 6
 #define MSS 0
 #define CHECKSUM 0
+#define BATCH_SIZE 16	// BATCH_SIZE 必须是SQ CQ entry数的因数
 
 
-int cnt=0;
 
 flexio_dev_rpc_handler_t l2_reflector_dev_init;	       /* Device initialization function */
 flexio_dev_event_handler_t l2_reflector_event_handler; /* Event handler function */
@@ -185,7 +185,7 @@ static void init_sq(const struct app_transfer_wq app_sq, struct sq_ctx_t *ctx)
  * @sq_idx_mask [in]: SQ index mask
  * @return: pointer to next SQE
  */
-static void *get_next_sqe(struct sq_ctx_t *sq_ctx, uint32_t sq_idx_mask)
+static inline void *get_next_sqe(struct sq_ctx_t *sq_ctx, uint32_t sq_idx_mask)
 {
 	return &sq_ctx->sq_ring[sq_ctx->sq_wqe_seg_idx++ & sq_idx_mask];
 }
@@ -265,12 +265,15 @@ __dpa_rpc__ uint64_t l2_reflector_device_init(uint64_t data)
 void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 {
 	struct flexio_dev_thread_ctx *dtctx;
-
+	
+	int i;
+	uint32_t cqe_cnt=0;
+	struct flexio_dev_cqe64 *cqe_now;
 	int rq_wqe_idx;
-	uint32_t data_sz;
-	char *data_ptr;
+	uint32_t data_sz[BATCH_SIZE];
+	char *data_ptr[BATCH_SIZE];
 	char tmp;
-	union flexio_dev_sqe_seg *swqe;
+	union flexio_dev_sqe_seg *swqe[BATCH_SIZE*4];
 
 
 
@@ -285,52 +288,83 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 	
 								
 	while(1)
-	{							// dev_ctx.rqcq_ctx.cqe: 这次该使用的那个CQE
-		if(flexio_dev_cqe_get_owner(dev_ctx.rqcq_ctx.cqe) != dev_ctx.rqcq_ctx.cq_hw_owner_bit)
+	{				
+		if(flexio_dev_cqe_get_owner(&(dev_ctx.rqcq_ctx.cq_ring[dev_ctx.rqcq_ctx.cq_idx+cqe_cnt & L2_CQ_IDX_MASK])) != dev_ctx.rqcq_ctx.cq_hw_owner_bit)
 		{
+			cqe_cnt++;
+		}
+
+		if(cqe_cnt%BATCH_SIZE==0)
+		{
+			cqe_cnt=0;
+
 			// 获取RQ CQE
-			rq_wqe_idx = flexio_dev_cqe_get_wqe_counter(dev_ctx.rqcq_ctx.cqe);
-			data_ptr=flexio_dev_rwqe_get_addr(&dev_ctx.rq_ctx.rq_ring[rq_wqe_idx & L2_RQ_IDX_MASK]);
-			data_sz=flexio_dev_cqe_get_byte_cnt(dev_ctx.rqcq_ctx.cqe);
+			for(i=0; i<BATCH_SIZE; i++)
+			{
+				cqe_now=&(dev_ctx.rqcq_ctx.cq_ring[dev_ctx.rqcq_ctx.cq_idx+i & L2_CQ_IDX_MASK]);
+				rq_wqe_idx = flexio_dev_cqe_get_wqe_counter(cqe_now);
+				data_ptr[i]=flexio_dev_rwqe_get_addr(&dev_ctx.rq_ctx.rq_ring[rq_wqe_idx & L2_RQ_IDX_MASK]);
+				data_sz[i]=flexio_dev_cqe_get_byte_cnt(cqe_now);
+			}
 
 			// 交换MAC
-			for (int byte = 0; byte < NB_MAC_ADDRESS_BYTES; byte++) {
-				tmp = data_ptr[byte];
-				data_ptr[byte] = data_ptr[byte + NB_MAC_ADDRESS_BYTES];
-				/* dst and src MACs are aligned one after the other in the ether header */
-				data_ptr[byte + NB_MAC_ADDRESS_BYTES] = tmp;
+			for(i=0; i<BATCH_SIZE; i++)
+			{
+				for (int byte = 0; byte < NB_MAC_ADDRESS_BYTES; byte++) {
+					tmp = data_ptr[i][byte];
+					data_ptr[i][byte] = data_ptr[i][byte + NB_MAC_ADDRESS_BYTES];
+					/* dst and src MACs are aligned one after the other in the ether header */
+					data_ptr[i][byte + NB_MAC_ADDRESS_BYTES] = tmp;
+				}
 			}
 
 			// 生成新SQ CQE
 			/* Take first segment for SQ WQE (3 segments will be used) */
+			for(i=0; i<BATCH_SIZE*4; i++)
+			{
+				swqe[i]=get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
+			}
+			
 			/* Fill out 1-st segment (Control) */
-			swqe=get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
-			flexio_dev_swqe_seg_ctrl_set(swqe,
-							dev_ctx.sq_ctx.sq_pi,
-							dev_ctx.sq_ctx.sq_number,
-							MLX5_CTRL_SEG_CE_CQE_ON_CQE_ERROR,
-							FLEXIO_CTRL_SEG_SEND_EN);
+			for(i=0; i<BATCH_SIZE; i++)
+			{
+				flexio_dev_swqe_seg_ctrl_set(
+					swqe[i*4],
+					dev_ctx.sq_ctx.sq_pi+i,
+					dev_ctx.sq_ctx.sq_number,
+					MLX5_CTRL_SEG_CE_CQE_ON_CQE_ERROR,
+					FLEXIO_CTRL_SEG_SEND_EN
+				);
+			}
 			/* Fill out 2-nd segment (Ethernet) */
-			swqe = get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
-			flexio_dev_swqe_seg_eth_set(swqe, MSS, CHECKSUM, 0, NULL);
+			for(i=0; i<BATCH_SIZE; i++)
+			{
+				flexio_dev_swqe_seg_eth_set(swqe[i*4+1], MSS, CHECKSUM, 0, NULL);
+			}
 			/* Fill out 3-rd segment (Data) */
-			swqe = get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
-			flexio_dev_swqe_seg_mem_ptr_data_set(swqe, data_sz, dev_ctx.lkey, (uint64_t)data_ptr);
-			/* Send WQE is 4 WQEBBs need to skip the 4-th segment */
-			swqe = get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
+			for(i=0; i<BATCH_SIZE; i++)
+			{
+				flexio_dev_swqe_seg_mem_ptr_data_set(swqe[i*4+2], data_sz[i], dev_ctx.lkey, (uint64_t)data_ptr[i]);
+			}
+			
 			/* Ring DB */
-			__dpa_thread_fence(__DPA_MEMORY, __DPA_W, __DPA_W);
-			dev_ctx.sq_ctx.sq_pi++;
-			flexio_dev_qp_sq_ring_db(dtctx, dev_ctx.sq_ctx.sq_pi, dev_ctx.sq_ctx.sq_number);
-			flexio_dev_dbr_rq_inc_pi(dev_ctx.rq_ctx.rq_dbr);
-
-			// 更新SQ的头指针并向硬件同步
-			dev_ctx.rqcq_ctx.cq_idx++;	// cq_idx就是consumer pointer (index)
-			dev_ctx.rqcq_ctx.cqe = &(dev_ctx.rqcq_ctx.cq_ring[dev_ctx.rqcq_ctx.cq_idx & L2_CQ_IDX_MASK]);
-			/* check for wrap around */
-			if (!(dev_ctx.rqcq_ctx.cq_idx & L2_CQ_IDX_MASK))
-				dev_ctx.rqcq_ctx.cq_hw_owner_bit = !dev_ctx.rqcq_ctx.cq_hw_owner_bit;
-			flexio_dev_dbr_cq_set_ci(dev_ctx.rqcq_ctx.cq_dbr, dev_ctx.rqcq_ctx.cq_idx);
+			for(i=0; i<BATCH_SIZE; i++)
+			{
+				dev_ctx.sq_ctx.sq_pi++;
+				__dpa_thread_fence(__DPA_MEMORY, __DPA_W, __DPA_W);
+				flexio_dev_qp_sq_ring_db(dtctx, dev_ctx.sq_ctx.sq_pi, dev_ctx.sq_ctx.sq_number);
+				flexio_dev_dbr_rq_inc_pi(dev_ctx.rq_ctx.rq_dbr);
+			}
+			
+			// 更新SCQ的头指针并向硬件同步
+			for(i=0; i<BATCH_SIZE; i++)
+			{
+				dev_ctx.rqcq_ctx.cq_idx++;	// cq_idx就是consumer pointer (index)
+				/* check for wrap around */
+				if (!(dev_ctx.rqcq_ctx.cq_idx & L2_CQ_IDX_MASK))
+					dev_ctx.rqcq_ctx.cq_hw_owner_bit = !dev_ctx.rqcq_ctx.cq_hw_owner_bit;
+				flexio_dev_dbr_cq_set_ci(dev_ctx.rqcq_ctx.cq_dbr, dev_ctx.rqcq_ctx.cq_idx);
+			}
 		}
 	}
 
