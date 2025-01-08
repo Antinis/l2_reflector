@@ -118,6 +118,7 @@ doca_error_t l2_reflector_setup_device(struct l2_reflector_config *app_cfg)
 		DOCA_LOG_ERR("Could not create event handler (%d)", result);
 		return DOCA_ERROR_DRIVER;
 	}
+
 	return DOCA_SUCCESS;
 }
 

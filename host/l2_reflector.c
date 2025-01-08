@@ -42,6 +42,7 @@ DOCA_LOG_REGISTER(L2_REFLECTOR);
 
 static bool force_quit; /* Set to true to terminate the application */
 extern flexio_func_t l2_reflector_device_init;
+// extern flexio_func_t packet_processing_polling;
 
 /*
  * Signals handler function to handle SIGINT and SIGTERM signals
@@ -192,6 +193,15 @@ int main(int argc, char **argv)
 	/* Add an additional new line for output readability */
 	DOCA_LOG_INFO("");
 	DOCA_LOG_INFO("Press Ctrl+C to terminate");
+
+
+
+	// ret = flexio_process_call(app_cfg.flexio_process,
+	// 			  &l2_reflector_device_init,
+	// 			  &rpc_ret_val);
+
+
+
 	while (!force_quit)
 		sleep(1);
 	

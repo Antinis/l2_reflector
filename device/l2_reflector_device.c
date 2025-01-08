@@ -173,7 +173,7 @@ static void *get_next_sqe(struct sq_ctx_t *sq_ctx, uint32_t sq_idx_mask)
  */
 static void step_cq(struct cq_ctx_t *cq_ctx, uint32_t cq_idx_mask)
 {
-	cq_ctx->cq_idx++;
+	cq_ctx->cq_idx++;	// cq_idx就是consumer pointer (index)
 	cq_ctx->cqe = &cq_ctx->cq_ring[cq_ctx->cq_idx & cq_idx_mask];
 	/* check for wrap around */
 	if (!(cq_ctx->cq_idx & cq_idx_mask))
@@ -356,6 +356,19 @@ __dpa_rpc__ uint64_t l2_reflector_device_init(uint64_t data)
 	return 0;
 }
 
+
+// __dpa_rpc__ uint64_t packet_processing_polling(void)
+// {
+// 	struct flexio_dev_thread_ctx *dtctx;
+// 	flexio_dev_get_thread_ctx(&dtctx);
+
+// 	flexio_dev_print("DEVICE:: DEBUG: POLLING\n");
+
+
+// 	return 0;
+// }
+
+
 /*
  * This function is called when a new packet is received to RQ's CQ.
  * Upon receiving a packet, the function will iterate over all received packets and process them.
@@ -372,14 +385,27 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 
 
 
-		
+	// while(1)
+	// {
+	// 	int i=0;
+	// 	flexio_dev_print("DEVICE:: DEBUG: POLLING %d\n", i);
+	// 	for(int j=0; j<10000000; j++)
+	// 		i=i+1;
+	// }
+	
 
-	while (flexio_dev_cqe_get_owner(dev_ctx.rqcq_ctx.cqe) != dev_ctx.rqcq_ctx.cq_hw_owner_bit) {
-		__dpa_thread_fence(__DPA_MEMORY, __DPA_R, __DPA_R);
-		process_packet(dtctx);
-		step_cq(&dev_ctx.rqcq_ctx, L2_CQ_IDX_MASK);
+								// dev_ctx.rqcq_ctx.cqe: 这次该使用的那个CQE
+	while(1)
+	{
+		if(flexio_dev_cqe_get_owner(dev_ctx.rqcq_ctx.cqe) != dev_ctx.rqcq_ctx.cq_hw_owner_bit)
+		{
+			__dpa_thread_fence(__DPA_MEMORY, __DPA_R, __DPA_R);
+			process_packet(dtctx);
+			step_cq(&dev_ctx.rqcq_ctx, L2_CQ_IDX_MASK);
+		}
 	}
-	__dpa_thread_fence(__DPA_MEMORY, __DPA_W, __DPA_W);
-	flexio_dev_cq_arm(dtctx, dev_ctx.rqcq_ctx.cq_idx, dev_ctx.rqcq_ctx.cq_number);
-	flexio_dev_thread_reschedule();
+	
+	// __dpa_thread_fence(__DPA_MEMORY, __DPA_W, __DPA_W);
+	// flexio_dev_cq_arm(dtctx, dev_ctx.rqcq_ctx.cq_idx, dev_ctx.rqcq_ctx.cq_number);
+	// flexio_dev_thread_reschedule();
 }
