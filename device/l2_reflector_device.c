@@ -69,10 +69,10 @@ struct sq_ctx_t {
 };
 
 /* SQ data buffer */
-struct dt_ctx_t {
-	void *sq_tx_buff;     /* SQ TX buffer */
-	uint32_t tx_buff_idx; /* TX buffer index */
-};
+// struct dt_ctx_t {
+// 	void *sq_tx_buff;     /* SQ TX buffer */
+// 	uint32_t tx_buff_idx; /* TX buffer index */
+// };
 
 /* Device context */
 static struct {
@@ -82,7 +82,7 @@ static struct {
 	struct cq_ctx_t sqcq_ctx; /* SQ CQ context */
 	struct rq_ctx_t rq_ctx;	  /* RQ context */
 	struct sq_ctx_t sq_ctx;	  /* SQ context */
-	struct dt_ctx_t dt_ctx;	  /* DT context */
+	// struct dt_ctx_t dt_ctx;	  /* DT context */
 	uint32_t packets_count;	  /* Number of processed packets */
 } dev_ctx = {0};
 
@@ -332,8 +332,8 @@ __dpa_rpc__ uint64_t l2_reflector_device_init(uint64_t data)
 	init_cq(shared_data->sq_cq_data, &dev_ctx.sqcq_ctx);
 	init_sq(shared_data->sq_data, &dev_ctx.sq_ctx);
 
-	dev_ctx.dt_ctx.sq_tx_buff = (void *)shared_data->sq_data.wqd_daddr;
-	dev_ctx.dt_ctx.tx_buff_idx = 0;
+	// dev_ctx.dt_ctx.sq_tx_buff = (void *)shared_data->sq_data.wqd_daddr;
+	// dev_ctx.dt_ctx.tx_buff_idx = 0;
 
 	dev_ctx.is_initialized = 1;
 
@@ -385,13 +385,6 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 
 
 
-	// while(1)
-	// {
-	// 	int i=0;
-	// 	flexio_dev_print("DEVICE:: DEBUG: POLLING %d\n", i);
-	// 	for(int j=0; j<10000000; j++)
-	// 		i=i+1;
-	// }
 	
 
 								// dev_ctx.rqcq_ctx.cqe: 这次该使用的那个CQE
@@ -404,8 +397,5 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 			step_cq(&dev_ctx.rqcq_ctx, L2_CQ_IDX_MASK);
 		}
 	}
-	
-	// __dpa_thread_fence(__DPA_MEMORY, __DPA_W, __DPA_W);
-	// flexio_dev_cq_arm(dtctx, dev_ctx.rqcq_ctx.cq_idx, dev_ctx.rqcq_ctx.cq_number);
-	// flexio_dev_thread_reschedule();
+
 }

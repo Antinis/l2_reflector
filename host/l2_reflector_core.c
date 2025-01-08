@@ -208,10 +208,10 @@ static doca_error_t allocate_sq_memory(struct flexio_process *process,
 	const int log_wqe_bsize = 6; /* WQE size is 64 bytes */
 	doca_error_t result;
 
-	if (flexio_buf_dev_alloc(process, LOG2VALUE(log_data_bsize), &sq_transf->wqd_daddr) != FLEXIO_STATUS_SUCCESS) {
-		DOCA_LOG_ERR("Failed to allocate SQ data buffer");
-		return DOCA_ERROR_DRIVER;
-	}
+	// if (flexio_buf_dev_alloc(process, LOG2VALUE(log_data_bsize), &sq_transf->wqd_daddr) != FLEXIO_STATUS_SUCCESS) {
+	// 	DOCA_LOG_ERR("Failed to allocate SQ data buffer");
+	// 	return DOCA_ERROR_DRIVER;
+	// }
 
 	if (flexio_buf_dev_alloc(process, LOG2VALUE(log_depth + log_wqe_bsize), &sq_transf->wq_ring_daddr) !=
 	    FLEXIO_STATUS_SUCCESS) {
@@ -319,14 +319,14 @@ static doca_error_t allocate_sq(struct l2_reflector_config *app_cfg)
 
 	app_cfg->sq_transf.wq_num = flexio_sq_get_wq_num(app_cfg->flexio_sq_ptr);
 	/* Create SQ TX MKey */
-	result = create_dpa_mkey(app_cfg->flexio_process,
-				 app_cfg->pd,
-				 app_cfg->sq_transf.wqd_daddr,
-				 log_sqd_bsize,
-				 IBV_ACCESS_LOCAL_WRITE,
-				 &app_cfg->sqd_mkey);
-	if (result != DOCA_SUCCESS)
-		return result;
+	// result = create_dpa_mkey(app_cfg->flexio_process,
+	// 			 app_cfg->pd,
+	// 			 app_cfg->sq_transf.wqd_daddr,
+	// 			 log_sqd_bsize,
+	// 			 IBV_ACCESS_LOCAL_WRITE,
+	// 			 &app_cfg->sqd_mkey);
+	// if (result != DOCA_SUCCESS)
+	// 	return result;
 
 	// app_cfg->sq_transf.wqd_mkey_id = flexio_mkey_get_id(app_cfg->sqd_mkey);
 
@@ -534,7 +534,7 @@ static void l2_reflector_sq_destroy(struct l2_reflector_config *app_cfg)
 	ret |= flexio_device_mkey_destroy(app_cfg->sqd_mkey);
 	ret |= flexio_buf_dev_free(app_cfg->flexio_process, app_cfg->sq_transf.wq_dbr_daddr);
 	ret |= flexio_buf_dev_free(app_cfg->flexio_process, app_cfg->sq_transf.wq_ring_daddr);
-	ret |= flexio_buf_dev_free(app_cfg->flexio_process, app_cfg->sq_transf.wqd_daddr);
+	// ret |= flexio_buf_dev_free(app_cfg->flexio_process, app_cfg->sq_transf.wqd_daddr);
 
 	if (ret != FLEXIO_STATUS_SUCCESS)
 		DOCA_LOG_ERR("Failed to destroy SQ");
