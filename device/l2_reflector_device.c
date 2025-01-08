@@ -198,17 +198,6 @@ static void *get_next_sqe(struct sq_ctx_t *sq_ctx, uint32_t sq_idx_mask)
  * @cq_ctx [in]: CQ context
  * @cq_idx_mask [in]: CQ index mask which indicates when the CQ is full
  */
-static void step_cq(struct cq_ctx_t *cq_ctx, uint32_t cq_idx_mask)
-{
-	cq_ctx->cq_idx++;	// cq_idx就是consumer pointer (index)
-	cq_ctx->cqe = &cq_ctx->cq_ring[cq_ctx->cq_idx & cq_idx_mask];
-
-	/* check for wrap around */
-	if (!(cq_ctx->cq_idx & cq_idx_mask))
-		cq_ctx->cq_hw_owner_bit = !cq_ctx->cq_hw_owner_bit;
-
-	flexio_dev_dbr_cq_set_ci(cq_ctx->cq_dbr, cq_ctx->cq_idx);
-}
 
 uint32_t ntohl32(uint32_t netlong) {
     return ((netlong & 0xFF000000) >> 24) |
@@ -226,76 +215,6 @@ uint64_t ntohl64(uint64_t netlonglong) {
            ((netlonglong & 0x0000000000FF0000ULL) << 24) |
            ((netlonglong & 0x000000000000FF00ULL) << 40) |
            ((netlonglong & 0x00000000000000FFULL) << 56);
-}
-
-/*
- * This is the main function of the L2 reflector device, called on each packet from l2_reflector_device_event_handler()
- * Packet are received from the RQ, processed by changing MAC addresses and transmitted to the SQ.
- *
- * @dtctx [in]: This thread context
- */
-static void process_packet(struct flexio_dev_thread_ctx *dtctx)
-{
-	// flexio_dev_print("DEVICE:: DEBUG: process_packet, #%d\n", cnt++);
-
-	uint32_t rq_wqe_idx;
-	struct flexio_dev_wqe_rcv_data_seg *rwqe;
-	uint32_t data_sz;
-	char *rq_data;
-	char *sq_data;
-	union flexio_dev_sqe_seg *swqe;
-	char tmp;
-
-
-
-	/* Extract relevant data from CQE */
-	rq_wqe_idx = flexio_dev_cqe_get_wqe_counter(dev_ctx.rqcq_ctx.cqe);
-	data_sz = flexio_dev_cqe_get_byte_cnt(dev_ctx.rqcq_ctx.cqe);
-
-	/* Get RQ WQE pointed by CQE */
-	rwqe = &dev_ctx.rq_ctx.rq_ring[rq_wqe_idx & L2_RQ_IDX_MASK];
-
-	/* Extract data (whole packet) pointed by RQ WQE */
-	rq_data = flexio_dev_rwqe_get_addr(rwqe);
-
-	sq_data=rq_data;
-	/* swap mac addresses */
-	for (int byte = 0; byte < NB_MAC_ADDRESS_BYTES; byte++) {
-		tmp = sq_data[byte];
-		sq_data[byte] = sq_data[byte + NB_MAC_ADDRESS_BYTES];
-		/* dst and src MACs are aligned one after the other in the ether header */
-		sq_data[byte + NB_MAC_ADDRESS_BYTES] = tmp;
-	}
-	
-	
-		
-
-	/* Take first segment for SQ WQE (3 segments will be used) */
-	swqe = get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
-
-	/* Fill out 1-st segment (Control) */
-	flexio_dev_swqe_seg_ctrl_set(swqe,
-				     dev_ctx.sq_ctx.sq_pi,
-				     dev_ctx.sq_ctx.sq_number,
-				     MLX5_CTRL_SEG_CE_CQE_ON_CQE_ERROR,
-				     FLEXIO_CTRL_SEG_SEND_EN);
-
-	/* Fill out 2-nd segment (Ethernet) */
-	swqe = get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
-	flexio_dev_swqe_seg_eth_set(swqe, MSS, CHECKSUM, 0, NULL);
-
-	/* Fill out 3-rd segment (Data) */
-	swqe = get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
-	flexio_dev_swqe_seg_mem_ptr_data_set(swqe, data_sz, dev_ctx.lkey, (uint64_t)sq_data);
-
-	/* Send WQE is 4 WQEBBs need to skip the 4-th segment */
-	swqe = get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
-
-	/* Ring DB */
-	__dpa_thread_fence(__DPA_MEMORY, __DPA_W, __DPA_W);
-	dev_ctx.sq_ctx.sq_pi++;
-	flexio_dev_qp_sq_ring_db(dtctx, dev_ctx.sq_ctx.sq_pi, dev_ctx.sq_ctx.sq_number);
-	flexio_dev_dbr_rq_inc_pi(dev_ctx.rq_ctx.rq_dbr);
 }
 
 /*
@@ -335,6 +254,9 @@ __dpa_rpc__ uint64_t l2_reflector_device_init(uint64_t data)
 	return 0;
 }
 
+
+
+
 /*
  * This function is called when a new packet is received to RQ's CQ.
  * Upon receiving a packet, the function will iterate over all received packets and process them.
@@ -343,6 +265,15 @@ __dpa_rpc__ uint64_t l2_reflector_device_init(uint64_t data)
 void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 {
 	struct flexio_dev_thread_ctx *dtctx;
+
+	int rq_wqe_idx;
+	uint32_t data_sz;
+	char *data_ptr;
+	char tmp;
+	union flexio_dev_sqe_seg *swqe;
+
+
+
 	flexio_dev_get_thread_ctx(&dtctx);
 	flexio_dev_print("DEVICE:: DEBUG: New event\n");
 
@@ -357,9 +288,49 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 	{							// dev_ctx.rqcq_ctx.cqe: 这次该使用的那个CQE
 		if(flexio_dev_cqe_get_owner(dev_ctx.rqcq_ctx.cqe) != dev_ctx.rqcq_ctx.cq_hw_owner_bit)
 		{
-			// __dpa_thread_fence(__DPA_MEMORY, __DPA_R, __DPA_R);
-			process_packet(dtctx);
-			step_cq(&dev_ctx.rqcq_ctx, L2_CQ_IDX_MASK);
+			// 获取RQ CQE
+			rq_wqe_idx = flexio_dev_cqe_get_wqe_counter(dev_ctx.rqcq_ctx.cqe);
+			data_ptr=flexio_dev_rwqe_get_addr(&dev_ctx.rq_ctx.rq_ring[rq_wqe_idx & L2_RQ_IDX_MASK]);
+			data_sz=flexio_dev_cqe_get_byte_cnt(dev_ctx.rqcq_ctx.cqe);
+
+			// 交换MAC
+			for (int byte = 0; byte < NB_MAC_ADDRESS_BYTES; byte++) {
+				tmp = data_ptr[byte];
+				data_ptr[byte] = data_ptr[byte + NB_MAC_ADDRESS_BYTES];
+				/* dst and src MACs are aligned one after the other in the ether header */
+				data_ptr[byte + NB_MAC_ADDRESS_BYTES] = tmp;
+			}
+
+			// 生成新SQ CQE
+			/* Take first segment for SQ WQE (3 segments will be used) */
+			/* Fill out 1-st segment (Control) */
+			swqe=get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
+			flexio_dev_swqe_seg_ctrl_set(swqe,
+							dev_ctx.sq_ctx.sq_pi,
+							dev_ctx.sq_ctx.sq_number,
+							MLX5_CTRL_SEG_CE_CQE_ON_CQE_ERROR,
+							FLEXIO_CTRL_SEG_SEND_EN);
+			/* Fill out 2-nd segment (Ethernet) */
+			swqe = get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
+			flexio_dev_swqe_seg_eth_set(swqe, MSS, CHECKSUM, 0, NULL);
+			/* Fill out 3-rd segment (Data) */
+			swqe = get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
+			flexio_dev_swqe_seg_mem_ptr_data_set(swqe, data_sz, dev_ctx.lkey, (uint64_t)data_ptr);
+			/* Send WQE is 4 WQEBBs need to skip the 4-th segment */
+			swqe = get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
+			/* Ring DB */
+			__dpa_thread_fence(__DPA_MEMORY, __DPA_W, __DPA_W);
+			dev_ctx.sq_ctx.sq_pi++;
+			flexio_dev_qp_sq_ring_db(dtctx, dev_ctx.sq_ctx.sq_pi, dev_ctx.sq_ctx.sq_number);
+			flexio_dev_dbr_rq_inc_pi(dev_ctx.rq_ctx.rq_dbr);
+
+			// 更新SQ的头指针并向硬件同步
+			dev_ctx.rqcq_ctx.cq_idx++;	// cq_idx就是consumer pointer (index)
+			dev_ctx.rqcq_ctx.cqe = &(dev_ctx.rqcq_ctx.cq_ring[dev_ctx.rqcq_ctx.cq_idx & L2_CQ_IDX_MASK]);
+			/* check for wrap around */
+			if (!(dev_ctx.rqcq_ctx.cq_idx & L2_CQ_IDX_MASK))
+				dev_ctx.rqcq_ctx.cq_hw_owner_bit = !dev_ctx.rqcq_ctx.cq_hw_owner_bit;
+			flexio_dev_dbr_cq_set_ci(dev_ctx.rqcq_ctx.cq_dbr, dev_ctx.rqcq_ctx.cq_idx);
 		}
 	}
 
