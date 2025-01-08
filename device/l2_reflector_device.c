@@ -348,23 +348,22 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 			}
 			
 			/* Ring DB */
+			dev_ctx.sq_ctx.sq_pi+=BATCH_SIZE;
+			__dpa_thread_fence(__DPA_MEMORY, __DPA_W, __DPA_W);
+			flexio_dev_qp_sq_ring_db(dtctx, dev_ctx.sq_ctx.sq_pi, dev_ctx.sq_ctx.sq_number);
+			// 没有一个批量递增的API，使这里很占时间而又不能被优化
 			for(i=0; i<BATCH_SIZE; i++)
 			{
-				dev_ctx.sq_ctx.sq_pi++;
-				__dpa_thread_fence(__DPA_MEMORY, __DPA_W, __DPA_W);
-				flexio_dev_qp_sq_ring_db(dtctx, dev_ctx.sq_ctx.sq_pi, dev_ctx.sq_ctx.sq_number);
 				flexio_dev_dbr_rq_inc_pi(dev_ctx.rq_ctx.rq_dbr);
 			}
 			
+			
 			// 更新SCQ的头指针并向硬件同步
-			for(i=0; i<BATCH_SIZE; i++)
-			{
-				dev_ctx.rqcq_ctx.cq_idx++;	// cq_idx就是consumer pointer (index)
-				/* check for wrap around */
-				if (!(dev_ctx.rqcq_ctx.cq_idx & L2_CQ_IDX_MASK))
-					dev_ctx.rqcq_ctx.cq_hw_owner_bit = !dev_ctx.rqcq_ctx.cq_hw_owner_bit;
-				flexio_dev_dbr_cq_set_ci(dev_ctx.rqcq_ctx.cq_dbr, dev_ctx.rqcq_ctx.cq_idx);
-			}
+			dev_ctx.rqcq_ctx.cq_idx+=BATCH_SIZE;	// cq_idx就是consumer pointer (index)
+			/* check for wrap around */
+			if (!(dev_ctx.rqcq_ctx.cq_idx & L2_CQ_IDX_MASK))
+				dev_ctx.rqcq_ctx.cq_hw_owner_bit = !dev_ctx.rqcq_ctx.cq_hw_owner_bit;
+			flexio_dev_dbr_cq_set_ci(dev_ctx.rqcq_ctx.cq_dbr, dev_ctx.rqcq_ctx.cq_idx);
 		}
 	}
 
