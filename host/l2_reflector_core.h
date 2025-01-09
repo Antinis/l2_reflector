@@ -36,6 +36,8 @@
 
 /* Source mac address to match packets in */
 #define SRC_MAC (0xa088c2bf464e)
+#define MAX_PROCESSES 256
+#define NUM_PROCESSES 4
 
 struct mlx5_ifc_dr_match_spec_bits {
 	uint8_t smac_47_16[0x20];
@@ -98,31 +100,31 @@ struct dr_flow_rule {
 /* L2 Reflector configuration structure */
 struct l2_reflector_config {
 	char device_name[DOCA_DEVINFO_IBDEV_NAME_SIZE]; /* IB device name */
-	struct l2_reflector_data *dev_data;		/* device data */
+	struct l2_reflector_data *dev_data[MAX_PROCESSES];		/* device data */
 
 	/* IB Verbs resources */
 	struct ibv_context *ibv_ctx; /* IB device context */
 	struct ibv_pd *pd;	     /* Protection domain */
 
 	/* FlexIO resources */
-	flexio_uintptr_t dev_data_daddr;	    /* Data address accessible by the device */
-	struct flexio_process *flexio_process;	    /* FlexIO process */
-	struct flexio_uar *flexio_uar;		    /* FlexIO UAR */
-	struct flexio_event_handler *event_handler; /* Event handler on device */
+	flexio_uintptr_t dev_data_daddr[MAX_PROCESSES];	    /* Data address accessible by the device */
+	struct flexio_process *flexio_process[MAX_PROCESSES];	    /* FlexIO process */
+	struct flexio_uar *flexio_uar[MAX_PROCESSES];		    /* FlexIO UAR */
+	struct flexio_event_handler *event_handler[MAX_PROCESSES]; /* Event handler on device */
 
-	struct app_transfer_cq rq_cq_transf;
-	struct app_transfer_cq sq_cq_transf;
+	struct app_transfer_cq rq_cq_transf[MAX_PROCESSES];
+	struct app_transfer_cq sq_cq_transf[MAX_PROCESSES];
 
-	struct flexio_mkey *rqd_mkey;
-	struct app_transfer_wq rq_transf;
+	struct flexio_mkey *rqd_mkey[MAX_PROCESSES];
+	struct app_transfer_wq rq_transf[MAX_PROCESSES];
 
-	struct flexio_mkey *sqd_mkey;
-	struct app_transfer_wq sq_transf;
+	struct flexio_mkey *sqd_mkey[MAX_PROCESSES];
+	struct app_transfer_wq sq_transf[MAX_PROCESSES];
 
-	struct flexio_cq *flexio_rq_cq_ptr; /* FlexIO RQ CQ */
-	struct flexio_cq *flexio_sq_cq_ptr; /* FlexIO SQ CQ */
-	struct flexio_rq *flexio_rq_ptr;    /* FlexIO RQ */
-	struct flexio_sq *flexio_sq_ptr;    /* FlexIO SQ */
+	struct flexio_cq *flexio_rq_cq_ptr[MAX_PROCESSES]; /* FlexIO RQ CQ */
+	struct flexio_cq *flexio_sq_cq_ptr[MAX_PROCESSES]; /* FlexIO SQ CQ */
+	struct flexio_rq *flexio_rq_ptr[MAX_PROCESSES];    /* FlexIO RQ */
+	struct flexio_sq *flexio_sq_ptr[MAX_PROCESSES];    /* FlexIO SQ */
 
 	/* mlx5dv direct rules resources, used for steering rules */
 	struct mlx5dv_dr_domain *rx_domain;

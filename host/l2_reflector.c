@@ -38,6 +38,12 @@
 #include "../common/l2_reflector_common.h"
 #include "l2_reflector_core.h"
 
+
+
+
+
+
+
 DOCA_LOG_REGISTER(L2_REFLECTOR);
 
 static bool force_quit; /* Set to true to terminate the application */
@@ -116,6 +122,7 @@ int main(int argc, char **argv)
 
 
 
+	
 
 
 
@@ -128,44 +135,51 @@ int main(int argc, char **argv)
 		doca_argp_destroy();
 		return EXIT_FAILURE;
 	}
+	
 
 	/* Create FlexIO Process and allocate memory */
 	result = l2_reflector_setup_device(&app_cfg);
 	if (result != DOCA_SUCCESS)
 		goto ibv_device_cleanup;
 
+
 	/* Allocate device WQs, CQs and data */
 	result = l2_reflector_allocate_device_resources(&app_cfg);
 	if (result != DOCA_SUCCESS)
 		goto device_cleanup;
+	
 
 
+	struct flexio_msg_stream *stream[NUM_PROCESSES];
+	for(int i=0; i<NUM_PROCESSES; i++)
+	{
+		flexio_msg_stream_attr_t stream_fattr;
+		memset(&stream_fattr, 0, sizeof(stream_fattr));
+		stream_fattr.data_bsize = 2048 * 2048;
+		stream_fattr.sync_mode = FLEXIO_LOG_DEV_SYNC_MODE_SYNC;
+		// pthread_t *ppthread=NULL;
+		flexio_msg_stream_create(
+			app_cfg.flexio_process[i],
+			&stream_fattr,
+			stdout,
+			NULL,
+			&stream[i]
+		);
+	}
 	
-	flexio_msg_stream_attr_t stream_fattr;
-    memset(&stream_fattr, 0, sizeof(stream_fattr));
-    stream_fattr.data_bsize = 2048 * 2048;
-    stream_fattr.sync_mode = FLEXIO_LOG_DEV_SYNC_MODE_SYNC;
-	struct flexio_msg_stream *stream;
-	// pthread_t *ppthread=NULL;
-	flexio_msg_stream_create(
-		app_cfg.flexio_process,
-		&stream_fattr,
-		stdout,
-		NULL,
-		&stream
-	);
-	
-	// flexio_print_init();
 
 	/* Run init function on device */
-	ret = flexio_process_call(app_cfg.flexio_process,
-				  &l2_reflector_device_init,
-				  &rpc_ret_val,
-				  app_cfg.dev_data_daddr);
+	for(int i=0; i<NUM_PROCESSES; i++)
+	{
+		ret = flexio_process_call(app_cfg.flexio_process[i],
+					&l2_reflector_device_init,
+					&rpc_ret_val,
+					app_cfg.dev_data_daddr[i]);
 	
-	if (ret != FLEXIO_STATUS_SUCCESS) {
-		DOCA_LOG_ERR("Failed to call init function on device");
-		goto device_resources_cleanup;
+		if (ret != FLEXIO_STATUS_SUCCESS) {
+			DOCA_LOG_ERR("Failed to call init function on device");
+			goto device_resources_cleanup;
+		}
 	}
 
 	/* Steering rule */
@@ -181,10 +195,13 @@ int main(int argc, char **argv)
 		goto rule_cleanup;
 	}
 
-	ret = flexio_event_handler_run(app_cfg.event_handler, 0);
-	if (ret != FLEXIO_STATUS_SUCCESS) {
-		DOCA_LOG_ERR("Failed to run event handler on device");
-		goto rule_cleanup;
+	for(int i=0; i<NUM_PROCESSES; i++)
+	{
+		ret = flexio_event_handler_run(app_cfg.event_handler[i], 0);
+		if (ret != FLEXIO_STATUS_SUCCESS) {
+			DOCA_LOG_ERR("Failed to run event handler on device");
+			goto rule_cleanup;
+		}
 	}
 
 	signal(SIGINT, signal_handler);
@@ -196,17 +213,17 @@ int main(int argc, char **argv)
 
 
 
-	// ret = flexio_process_call(app_cfg.flexio_process,
-	// 			  &l2_reflector_device_init,
-	// 			  &rpc_ret_val);
 
 
 
 	while (!force_quit)
 		sleep(1);
 	
-	flexio_msg_stream_destroy(stream);
-
+	for(int i=0; i<NUM_PROCESSES; i++)
+	{
+		flexio_msg_stream_destroy(stream[i]);
+	}
+	
 	l2_reflector_destroy(&app_cfg);
 	return EXIT_SUCCESS;
 

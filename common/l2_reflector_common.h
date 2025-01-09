@@ -63,6 +63,7 @@ struct l2_reflector_data {
 	struct app_transfer_wq rq_data;	   /* device RQ */
 	struct app_transfer_cq sq_cq_data; /* device SQ's CQ */
 	struct app_transfer_wq sq_data;	   /* device SQ */
+	int idx;
 } __attribute__((__packed__, aligned(8)));
 
 #endif

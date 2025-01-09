@@ -241,7 +241,7 @@ __dpa_rpc__ uint64_t l2_reflector_device_init(uint64_t data)
 
 	struct flexio_dev_thread_ctx *dtctx;
 	flexio_dev_get_thread_ctx(&dtctx);
-	flexio_dev_print("DEVICE:: DEBUG: DEVICE INITIALIZING\n");
+	flexio_dev_print("DEVICE:: DEBUG: DEVICE INITIALIZING #%d, %lx\n", shared_data->idx, (uint64_t)(&shared_data->idx));
 
 	struct flexio_dev_wqe_rcv_data_seg *wqe=dev_ctx.rq_ctx.rq_ring;
 	flexio_dev_print("	RQ buffer:\n");
@@ -282,8 +282,8 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 
 	if (dev_ctx.is_initialized == 0)
 		flexio_dev_thread_reschedule();
-
-
+	
+	flexio_dev_print("DEVICE:: DEBUG: DEVICE REACHING #%d\n", flexio_dev_get_thread_id(dtctx));
 
 	
 								
