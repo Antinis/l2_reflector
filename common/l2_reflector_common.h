@@ -27,11 +27,11 @@
 #define L2_REFLECTOR_COMMON_H_
 
 /* Logarithm ring size */
-#define L2_LOG_SQ_RING_DEPTH 8 /* 2^7 entries */
-#define L2_LOG_RQ_RING_DEPTH 8 /* 2^7 entries */
-#define L2_LOG_CQ_RING_DEPTH 8 /* 2^7 entries */
+#define L2_LOG_SQ_RING_DEPTH 7 /* 2^7 entries */
+#define L2_LOG_RQ_RING_DEPTH 7 /* 2^7 entries */
+#define L2_LOG_CQ_RING_DEPTH 7 /* 2^7 entries */
 
-#define L2_LOG_WQ_DATA_ENTRY_BSIZE 11 /* WQ buffer logarithmic size */
+#define L2_LOG_WQ_DATA_ENTRY_BSIZE 10 /* WQ buffer logarithmic size */
 
 /* Queues index mask, represents the index of the last CQE/WQE in the queue */
 #define L2_CQ_IDX_MASK ((1 << L2_LOG_CQ_RING_DEPTH) - 1)

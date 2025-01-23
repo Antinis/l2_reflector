@@ -37,9 +37,10 @@
 
 
 #define NB_MAC_ADDRESS_BYTES 6
+#define NB_UDP_PORT_BYTES 2
 #define MSS 0
 #define CHECKSUM 0
-#define BATCH_SIZE 16	// BATCH_SIZE 必须是SQ CQ entry数的因数
+#define BATCH_SIZE 8	// BATCH_SIZE 必须是SQ CQ entry数的因数
 
 
 
@@ -199,23 +200,23 @@ static inline void *get_next_sqe(struct sq_ctx_t *sq_ctx, uint32_t sq_idx_mask)
  * @cq_idx_mask [in]: CQ index mask which indicates when the CQ is full
  */
 
-uint32_t ntohl32(uint32_t netlong) {
-    return ((netlong & 0xFF000000) >> 24) |
-           ((netlong & 0x00FF0000) >> 8)  |
-           ((netlong & 0x0000FF00) << 8)  |
-           ((netlong & 0x000000FF) << 24);
-}
+// uint32_t ntohl32(uint32_t netlong) {
+//     return ((netlong & 0xFF000000) >> 24) |
+//            ((netlong & 0x00FF0000) >> 8)  |
+//            ((netlong & 0x0000FF00) << 8)  |
+//            ((netlong & 0x000000FF) << 24);
+// }
 
-uint64_t ntohl64(uint64_t netlonglong) {
-    return ((netlonglong & 0xFF00000000000000ULL) >> 56) |
-           ((netlonglong & 0x00FF000000000000ULL) >> 40) |
-           ((netlonglong & 0x0000FF0000000000ULL) >> 24) |
-           ((netlonglong & 0x000000FF00000000ULL) >> 8)  |
-           ((netlonglong & 0x00000000FF000000ULL) << 8)  |
-           ((netlonglong & 0x0000000000FF0000ULL) << 24) |
-           ((netlonglong & 0x000000000000FF00ULL) << 40) |
-           ((netlonglong & 0x00000000000000FFULL) << 56);
-}
+// uint64_t ntohl64(uint64_t netlonglong) {
+//     return ((netlonglong & 0xFF00000000000000ULL) >> 56) |
+//            ((netlonglong & 0x00FF000000000000ULL) >> 40) |
+//            ((netlonglong & 0x0000FF0000000000ULL) >> 24) |
+//            ((netlonglong & 0x000000FF00000000ULL) >> 8)  |
+//            ((netlonglong & 0x00000000FF000000ULL) << 8)  |
+//            ((netlonglong & 0x0000000000FF0000ULL) << 24) |
+//            ((netlonglong & 0x000000000000FF00ULL) << 40) |
+//            ((netlonglong & 0x00000000000000FFULL) << 56);
+// }
 
 /*
  * Called by host to initialize the device context
@@ -241,15 +242,17 @@ __dpa_rpc__ uint64_t l2_reflector_device_init(uint64_t data)
 
 	struct flexio_dev_thread_ctx *dtctx;
 	flexio_dev_get_thread_ctx(&dtctx);
-	flexio_dev_print("DEVICE:: DEBUG: DEVICE INITIALIZING #%d, %lx\n", shared_data->idx, (uint64_t)(&shared_data->idx));
+	// flexio_dev_print("DEVICE:: DEBUG: DEVICE INITIALIZING #%d, %lx\n", shared_data->idx, (uint64_t)(&shared_data->idx));
 
-	struct flexio_dev_wqe_rcv_data_seg *wqe=dev_ctx.rq_ctx.rq_ring;
-	flexio_dev_print("	RQ buffer:\n");
-	for(int i=0; i<8; i++)
-	{
-		flexio_dev_print("    RQE #%d, addr: 0x%lx\n", i, ntohl64(wqe->addr));
-		wqe++;
-	}
+	// flexio_dev_print("%lx\n", (uint64_t)dev_ctx.rq_ctx.rq_dbr);
+
+	// struct flexio_dev_wqe_rcv_data_seg *wqe=dev_ctx.rq_ctx.rq_ring;
+	// flexio_dev_print("	RQ buffer:\n");
+	// for(int i=0; i<8; i++)
+	// {
+	// 	flexio_dev_print("    RQE #%d, addr: 0x%lx\n", i, ntohl64(wqe->addr));
+	// 	wqe++;
+	// }
 
 	return 0;
 }
@@ -272,13 +275,16 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 	int rq_wqe_idx;
 	uint32_t data_sz[BATCH_SIZE];
 	char *data_ptr[BATCH_SIZE];
-	char tmp;
+	// char tmp;
 	union flexio_dev_sqe_seg *swqe[BATCH_SIZE*4];
+	size_t src_mac;
+	size_t dst_mac;
+	uint16_t src_udpport;
+	uint16_t dst_udpport;
 
-
+	// int cnt=0;
 
 	flexio_dev_get_thread_ctx(&dtctx);
-	flexio_dev_print("DEVICE:: DEBUG: New event\n");
 
 	if (dev_ctx.is_initialized == 0)
 		flexio_dev_thread_reschedule();
@@ -289,14 +295,17 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 								
 	while(1)
 	{				
+		// flexio_dev_print("%d\n", cnt++);
 		if(flexio_dev_cqe_get_owner(&(dev_ctx.rqcq_ctx.cq_ring[dev_ctx.rqcq_ctx.cq_idx+cqe_cnt & L2_CQ_IDX_MASK])) != dev_ctx.rqcq_ctx.cq_hw_owner_bit)
 		{
+			// flexio_dev_print("owner: %d, %d, %d\n", flexio_dev_cqe_get_owner(&(dev_ctx.rqcq_ctx.cq_ring[dev_ctx.rqcq_ctx.cq_idx+cqe_cnt & L2_CQ_IDX_MASK])), dev_ctx.rqcq_ctx.cq_hw_owner_bit, dev_ctx.rqcq_ctx.cq_idx+cqe_cnt);
 			cqe_cnt++;
 		}
 
-		if(cqe_cnt%BATCH_SIZE==0)
+		if(cqe_cnt%BATCH_SIZE==0 && cqe_cnt!=0)
 		{
 			cqe_cnt=0;
+			// flexio_dev_print("dev_ctx.rqcq_ctx.cq_idx: %d\n", dev_ctx.rqcq_ctx.cq_idx);
 
 			// 获取RQ CQE
 			for(i=0; i<BATCH_SIZE; i++)
@@ -306,16 +315,45 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 				data_ptr[i]=flexio_dev_rwqe_get_addr(&dev_ctx.rq_ctx.rq_ring[rq_wqe_idx & L2_RQ_IDX_MASK]);
 				data_sz[i]=flexio_dev_cqe_get_byte_cnt(cqe_now);
 			}
+			// flexio_dev_print("222\n");
+
+			// flexio_dev_print("%d.%d.%d.%d\n", (uint8_t)data_ptr[0][26], (uint8_t)data_ptr[0][27], (uint8_t)data_ptr[0][28], (uint8_t)data_ptr[0][29]);
+			// flexio_dev_print("%d.%d.%d.%d\n", (uint8_t)data_ptr[0][30], (uint8_t)data_ptr[0][31], (uint8_t)data_ptr[0][32], (uint8_t)data_ptr[0][33]);
+			// flexio_dev_print("%d ", ((uint8_t)data_ptr[0][34]<<8)|(uint8_t)data_ptr[0][35]);
+			// flexio_dev_print("%d\n", ((uint8_t)data_ptr[0][36]<<8)|(uint8_t)data_ptr[0][37]);
+			
+			// flexio_dev_print("333\n");
 
 			// 交换MAC
+			// for(i=0; i<BATCH_SIZE; i++)
+			// {
+			// 	for (int byte = 0; byte < NB_MAC_ADDRESS_BYTES; byte++) {
+			// 		tmp = data_ptr[i][byte];
+			// 		data_ptr[i][byte] = data_ptr[i][byte + NB_MAC_ADDRESS_BYTES];
+			// 		/* dst and src MACs are aligned one after the other in the ether header */
+			// 		data_ptr[i][byte + NB_MAC_ADDRESS_BYTES] = tmp;
+			// 	}
+			// }
+
 			for(i=0; i<BATCH_SIZE; i++)
 			{
-				for (int byte = 0; byte < NB_MAC_ADDRESS_BYTES; byte++) {
-					tmp = data_ptr[i][byte];
-					data_ptr[i][byte] = data_ptr[i][byte + NB_MAC_ADDRESS_BYTES];
-					/* dst and src MACs are aligned one after the other in the ether header */
-					data_ptr[i][byte + NB_MAC_ADDRESS_BYTES] = tmp;
-				}
+				src_mac = *(size_t *)(data_ptr[i]);
+				dst_mac = *(size_t *)(data_ptr[i] + 6);
+				*(size_t *)(data_ptr[i]) = dst_mac;
+				*(size_t *)(data_ptr[i] + 6) = (src_mac & 0x0000FFFFFFFFFFFF) | (0x0008ll << 48);
+
+				// 交换UDP PORT
+				src_udpport = *(uint16_t *)(data_ptr[i]+34);
+				dst_udpport = *(uint16_t *)(data_ptr[i]+36);
+				*(uint16_t *)(data_ptr[i]+34) = dst_udpport;
+				*(uint16_t *)(data_ptr[i]+36) = (src_udpport & 0xFFFF);
+
+				// for (int byte = 34; byte < 34+NB_UDP_PORT_BYTES; byte++) {
+				// 	char tmp = data_ptr[i][byte];
+				// 	data_ptr[i][byte] = data_ptr[i][byte + NB_UDP_PORT_BYTES];
+				// 	/* dst and src MACs are aligned one after the other in the ether header */
+				// 	data_ptr[i][byte + NB_UDP_PORT_BYTES] = tmp;
+				// }
 			}
 
 			// 生成新SQ CQE
@@ -360,10 +398,16 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 			
 			// 更新SCQ的头指针并向硬件同步
 			dev_ctx.rqcq_ctx.cq_idx+=BATCH_SIZE;	// cq_idx就是consumer pointer (index)
+			// flexio_dev_print("increasing: %d\n", dev_ctx.rqcq_ctx.cq_idx);
 			/* check for wrap around */
 			if (!(dev_ctx.rqcq_ctx.cq_idx & L2_CQ_IDX_MASK))
-				dev_ctx.rqcq_ctx.cq_hw_owner_bit = !dev_ctx.rqcq_ctx.cq_hw_owner_bit;
+			{
+				// flexio_dev_print("flapping: %d, %d\n", dev_ctx.rqcq_ctx.cq_idx, dev_ctx.rqcq_ctx.cq_hw_owner_bit);
+				dev_ctx.rqcq_ctx.cq_hw_owner_bit = !dev_ctx.rqcq_ctx.cq_hw_owner_bit;	
+			}
 			flexio_dev_dbr_cq_set_ci(dev_ctx.rqcq_ctx.cq_dbr, dev_ctx.rqcq_ctx.cq_idx);
+
+			// flexio_dev_print("Finished one round\n");
 		}
 	}
 

@@ -731,6 +731,8 @@ doca_error_t l2_reflector_create_steering_rule_rx(struct l2_reflector_config *ap
 	/* Fill match mask, match on all source mac bits */
 	DEVX_SET(dr_match_spec, match_mask->match_buf, smac_47_16, 0xffffffff);
 	DEVX_SET(dr_match_spec, match_mask->match_buf, smac_15_0, 0xffff);
+	////////
+	DEVX_SET(dr_match_spec, match_mask->match_buf, udp_dport, 0xffff);
 	app_cfg->rx_domain = mlx5dv_dr_domain_create(app_cfg->ibv_ctx, MLX5DV_DR_DOMAIN_TYPE_NIC_RX);
 	if (app_cfg->rx_domain == NULL) {
 		DOCA_LOG_ERR("Failed to allocate RX domain [%d]", errno);
@@ -752,41 +754,54 @@ doca_error_t l2_reflector_create_steering_rule_rx(struct l2_reflector_config *ap
 	}
 
 	/* Create rule */
-	app_cfg->rx_rule = calloc(1, sizeof(*app_cfg->rx_rule));
-	if (app_cfg->rx_rule == NULL) {
-		DOCA_LOG_ERR("Failed to allocate memory");
-		result = DOCA_ERROR_NO_MEMORY;
-		goto exit_with_error;
+	for(int i=0; i<NUM_PROCESSES; i++)
+	{
+		printf("creating %d\n", i);
+		app_cfg->rx_rule[i] = calloc(1, sizeof(*app_cfg->rx_rule[i]));
+		if (app_cfg->rx_rule[i] == NULL) {
+			DOCA_LOG_ERR("Failed to allocate memory");
+			result = DOCA_ERROR_NO_MEMORY;
+			goto exit_with_error;
+		}
+
+		/* Action = forward to FlexIO RQ */
+		app_cfg->rx_rule[i]->dr_action = mlx5dv_dr_action_create_dest_devx_tir(flexio_rq_get_tir(app_cfg->flexio_rq_ptr[i]));
+		if (app_cfg->rx_rule[i]->dr_action == NULL) {
+			DOCA_LOG_ERR("Failed to create RX rule action [%d]", errno);
+			result = DOCA_ERROR_DRIVER;
+			goto exit_with_error;
+		}
+
+		actions[0] = app_cfg->rx_rule[i]->dr_action;
+		/* Fill rule match, match on source mac address with this value */
+		// mac有6个字节，但这个函数一次只能填4个字节，所以拆成两次完成
+		DEVX_SET(dr_match_spec, match_mask->match_buf, smac_47_16, SRC_MAC >> 16);
+		// printf("!!%lx\n", match_mask->match_buf[0]);
+		DEVX_SET(dr_match_spec, match_mask->match_buf, smac_15_0, SRC_MAC % (1 << 16));
+		DEVX_SET(dr_match_spec, match_mask->match_buf, udp_dport, i+11451);
+		// printf("!!%lx\n", match_mask->match_buf[0]);
+		app_cfg->rx_rule[i]->dr_rule =
+			mlx5dv_dr_rule_create(app_cfg->rx_flow_table->dr_matcher, match_mask, actions_len, actions);
+		if (app_cfg->rx_rule[i]->dr_rule == NULL) {
+			DOCA_LOG_ERR("Failed to create RX rule [%d]", errno);
+			result = DOCA_ERROR_DRIVER;
+			goto exit_with_error;
+		}
 	}
 
-	/* Action = forward to FlexIO RQ */
-	app_cfg->rx_rule->dr_action = mlx5dv_dr_action_create_dest_devx_tir(flexio_rq_get_tir(app_cfg->flexio_rq_ptr[0]));
-	if (app_cfg->rx_rule->dr_action == NULL) {
-		DOCA_LOG_ERR("Failed to create RX rule action [%d]", errno);
-		result = DOCA_ERROR_DRIVER;
-		goto exit_with_error;
-	}
-
-	actions[0] = app_cfg->rx_rule->dr_action;
-	/* Fill rule match, match on source mac address with this value */
-	DEVX_SET(dr_match_spec, match_mask->match_buf, smac_47_16, SRC_MAC >> 16);
-	DEVX_SET(dr_match_spec, match_mask->match_buf, smac_15_0, SRC_MAC % (1 << 16));
-	app_cfg->rx_rule->dr_rule =
-		mlx5dv_dr_rule_create(app_cfg->rx_flow_table->dr_matcher, match_mask, actions_len, actions);
-	if (app_cfg->rx_rule->dr_rule == NULL) {
-		DOCA_LOG_ERR("Failed to create RX rule [%d]", errno);
-		result = DOCA_ERROR_DRIVER;
-		goto exit_with_error;
-	}
 	free(match_mask);
 	return DOCA_SUCCESS;
 
 exit_with_error:
 	free(match_mask);
-	if (app_cfg->rx_rule) {
-		destroy_rule(app_cfg->rx_rule);
-		app_cfg->rx_rule = NULL;
+	for(int i=0; i<NUM_PROCESSES; i++)
+	{
+		if (app_cfg->rx_rule[i]) {
+			destroy_rule(app_cfg->rx_rule[i]);
+			app_cfg->rx_rule[i] = NULL;
+		}
 	}
+	
 	destroy_table(app_cfg->rx_flow_table);
 	app_cfg->rx_flow_table = NULL;
 	mlx5dv_dr_domain_destroy(app_cfg->rx_domain);
@@ -905,7 +920,8 @@ exit_with_error:
 		app_cfg->tx_root_rule = NULL;
 	}
 	if (app_cfg->tx_rule) {
-		destroy_rule(app_cfg->rx_rule);
+		for(int i=0; i<NUM_PROCESSES; i++)
+			destroy_rule(app_cfg->rx_rule[i]);
 		app_cfg->tx_rule = NULL;
 	}
 	destroy_table(app_cfg->tx_flow_root_table);
@@ -928,10 +944,14 @@ void l2_reflector_device_resources_destroy(struct l2_reflector_config *app_cfg)
 
 void l2_reflector_steering_rules_destroy(struct l2_reflector_config *app_cfg)
 {
-	if (app_cfg->rx_rule) {
-		destroy_rule(app_cfg->rx_rule);
-		app_cfg->rx_rule = NULL;
+	for(int i=0; i<NUM_PROCESSES; i++)
+	{
+		if (app_cfg->rx_rule[i]) {
+			destroy_rule(app_cfg->rx_rule[i]);
+			app_cfg->rx_rule[i] = NULL;
+		}
 	}
+	
 	if (app_cfg->tx_rule) {
 		destroy_rule(app_cfg->tx_rule);
 		app_cfg->tx_rule = NULL;

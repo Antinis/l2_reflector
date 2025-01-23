@@ -37,7 +37,7 @@
 /* Source mac address to match packets in */
 #define SRC_MAC (0xa088c2bf464e)
 #define MAX_PROCESSES 256
-#define NUM_PROCESSES 4
+#define NUM_PROCESSES 62
 
 struct mlx5_ifc_dr_match_spec_bits {
 	uint8_t smac_47_16[0x20];
@@ -134,7 +134,7 @@ struct l2_reflector_config {
 	struct dr_flow_table *tx_flow_table;
 	struct dr_flow_table *tx_flow_root_table;
 
-	struct dr_flow_rule *rx_rule;
+	struct dr_flow_rule *rx_rule[MAX_PROCESSES];
 	struct dr_flow_rule *tx_rule;
 	struct dr_flow_rule *tx_root_rule;
 };
