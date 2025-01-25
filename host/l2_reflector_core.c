@@ -110,6 +110,13 @@ doca_error_t l2_reflector_setup_device(struct l2_reflector_config *app_cfg)
 			return DOCA_ERROR_DRIVER;
 		}
 
+		////
+		result=flexio_window_create(app_cfg->flexio_process[i], app_cfg->pd, &app_cfg->flexio_window[i]);
+		if (result != FLEXIO_STATUS_SUCCESS) {
+			DOCA_LOG_ERR("Could not create FlexIO window (%d)", result);
+			return DOCA_ERROR_DRIVER;
+		}
+
 		app_cfg->flexio_uar[i] = flexio_process_get_uar(app_cfg->flexio_process[i]);
 
 		event_handler_attr.host_stub_func = l2_reflector_device_event_handler;
@@ -242,26 +249,26 @@ static doca_error_t allocate_sq_memory(struct flexio_process *process,
  * @mkey [out]: mkey
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t create_dpa_mkey(struct flexio_process *process,
-				    struct ibv_pd *pd,
-				    flexio_uintptr_t daddr,
-				    int log_bsize,
-				    int access,
-				    struct flexio_mkey **mkey)
-{
-	struct flexio_mkey_attr mkey_attr = {0};
+// static doca_error_t create_dpa_mkey(struct flexio_process *process,
+// 				    struct ibv_pd *pd,
+// 				    flexio_uintptr_t daddr,
+// 				    int log_bsize,
+// 				    int access,
+// 				    struct flexio_mkey **mkey)
+// {
+// 	struct flexio_mkey_attr mkey_attr = {0};
 
-	mkey_attr.pd = pd;
-	mkey_attr.daddr = daddr;
-	mkey_attr.len = LOG2VALUE(log_bsize);
-	mkey_attr.access = access;
-	if (flexio_device_mkey_create(process, &mkey_attr, mkey) != FLEXIO_STATUS_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create MKey");
-		return DOCA_ERROR_DRIVER;
-	}
+// 	mkey_attr.pd = pd;
+// 	mkey_attr.daddr = daddr;
+// 	mkey_attr.len = LOG2VALUE(log_bsize);
+// 	mkey_attr.access = access;
+// 	if (flexio_device_mkey_create(process, &mkey_attr, mkey) != FLEXIO_STATUS_SUCCESS) {
+// 		DOCA_LOG_ERR("Failed to create MKey");
+// 		return DOCA_ERROR_DRIVER;
+// 	}
 
-	return DOCA_SUCCESS;
-}
+// 	return DOCA_SUCCESS;
+// }
 
 /*
  * Allocate SQ and CQ for the device
@@ -391,7 +398,7 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 	uint32_t mkey_id;
 	uint32_t cq_num;	/* CQ number */
 	uint32_t wq_num;	/* WQ number */
-	uint32_t log_rqd_bsize; /* SQ data buffer size */
+	// uint32_t log_rqd_bsize; /* SQ data buffer size */
 
 	/* RQ's CQ attributes */
 	struct flexio_cq_attr rqcq_attr = {.log_cq_depth = L2_LOG_CQ_RING_DEPTH,
@@ -421,13 +428,24 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 	app_cfg->rq_cq_transf[idx].cq_num = cq_num;
 	app_cfg->rq_cq_transf[idx].log_cq_depth = L2_LOG_RQ_RING_DEPTH;
 
-	log_rqd_bsize = L2_LOG_RQ_RING_DEPTH + L2_LOG_WQ_DATA_ENTRY_BSIZE;
+	// log_rqd_bsize = L2_LOG_RQ_RING_DEPTH + L2_LOG_WQ_DATA_ENTRY_BSIZE;
 
-	flexio_buf_dev_alloc(app_cfg->flexio_process[idx], LOG2VALUE(log_rqd_bsize), &app_cfg->rq_transf[idx].wqd_daddr);
-	if (app_cfg->rq_transf[idx].wqd_daddr == 0) {
-		DOCA_LOG_ERR("Failed to allocate memory for RQ data buffer");
+	// flexio_buf_dev_alloc(app_cfg->flexio_process[idx], LOG2VALUE(log_rqd_bsize), &app_cfg->rq_transf[idx].wqd_daddr);
+	// if (app_cfg->rq_transf[idx].wqd_daddr == 0) {
+	// 	DOCA_LOG_ERR("Failed to allocate memory for RQ data buffer");
+	// 	return DOCA_ERROR_DRIVER;
+	// }
+
+	void *wqd_daddr_host=malloc((LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE) + 63) & (~63));	// calloc函数已清零
+	if (!wqd_daddr_host) {
+		DOCA_LOG_ERR("Failed to allocate memory for RQ data buffer on HOST");
 		return DOCA_ERROR_DRIVER;
 	}
+	memset(wqd_daddr_host, 0, LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE));
+	app_cfg->rq_transf[idx].wqd_daddr=(flexio_uintptr_t)wqd_daddr_host;
+	printf("%lx: ", (uint64_t)wqd_daddr_host);
+	printf("%lx\n", *(uint64_t *)wqd_daddr_host);
+	
 
 	flexio_buf_dev_alloc(app_cfg->flexio_process[idx],
 			     LOG2VALUE(L2_LOG_CQ_RING_DEPTH) * sizeof(struct mlx5_wqe_data_seg),
@@ -442,16 +460,22 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 		return result;
 
 	/* Create an MKey for RX buffer */
-	result = create_dpa_mkey(app_cfg->flexio_process[idx],
-				 app_cfg->pd,
-				 app_cfg->rq_transf[idx].wqd_daddr,
-				 log_rqd_bsize,
-				 IBV_ACCESS_LOCAL_WRITE,
-				 &app_cfg->rqd_mkey[idx]);
-	if (result != DOCA_SUCCESS)
-		return result;
+	// result = create_dpa_mkey(app_cfg->flexio_process[idx],
+	// 			 app_cfg->pd,
+	// 			 app_cfg->rq_transf[idx].wqd_daddr,
+	// 			 log_rqd_bsize,
+	// 			 IBV_ACCESS_LOCAL_WRITE,
+	// 			 &app_cfg->rqd_mkey[idx]);
+	// if (result != DOCA_SUCCESS)
+	// 	return result;
+	//
+	// mkey_id = flexio_mkey_get_id(app_cfg->rqd_mkey[idx]);
 
-	mkey_id = flexio_mkey_get_id(app_cfg->rqd_mkey[idx]);
+	struct ibv_mr *res = NULL;
+	res=ibv_reg_mr(app_cfg->pd, (void *)app_cfg->rq_transf[idx].wqd_daddr, LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE), IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+	mkey_id = res->lkey;
+        
+
 	app_cfg->sq_transf[idx].wqd_mkey_id = mkey_id;
 
 	result = init_dpa_rq_ring(app_cfg->flexio_process[idx],
@@ -506,10 +530,10 @@ static void l2_reflector_rq_destroy(struct l2_reflector_config *app_cfg)
 		flexio_status ret = FLEXIO_STATUS_SUCCESS;
 
 		ret |= flexio_rq_destroy(app_cfg->flexio_rq_ptr[i]);
-		ret |= flexio_device_mkey_destroy(app_cfg->rqd_mkey[i]);
+		// ret |= flexio_device_mkey_destroy(app_cfg->rqd_mkey[i]);
 		ret |= flexio_buf_dev_free(app_cfg->flexio_process[i], app_cfg->rq_transf[i].wq_dbr_daddr);
 		ret |= flexio_buf_dev_free(app_cfg->flexio_process[i], app_cfg->rq_transf[i].wq_ring_daddr);
-		ret |= flexio_buf_dev_free(app_cfg->flexio_process[i], app_cfg->rq_transf[i].wqd_daddr);
+		// ret |= flexio_buf_dev_free(app_cfg->flexio_process[i], app_cfg->rq_transf[i].wqd_daddr);
 
 		if (ret != FLEXIO_STATUS_SUCCESS)
 			DOCA_LOG_ERR("Failed to destroy RQ");				
@@ -614,6 +638,7 @@ doca_error_t l2_reflector_allocate_device_resources(struct l2_reflector_config *
 		app_cfg->dev_data[i]->rq_cq_data = app_cfg->rq_cq_transf[i];
 		app_cfg->dev_data[i]->rq_data = app_cfg->rq_transf[i];
 		app_cfg->dev_data[i]->idx=i;
+		app_cfg->dev_data[i]->flexio_window_id=flexio_window_get_id(app_cfg->flexio_window[i]);
 		
 		ret = flexio_copy_from_host(app_cfg->flexio_process[i],
 						app_cfg->dev_data[i],

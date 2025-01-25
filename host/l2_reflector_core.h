@@ -109,6 +109,7 @@ struct l2_reflector_config {
 	/* FlexIO resources */
 	flexio_uintptr_t dev_data_daddr[MAX_PROCESSES];	    /* Data address accessible by the device */
 	struct flexio_process *flexio_process[MAX_PROCESSES];	    /* FlexIO process */
+	struct flexio_window *flexio_window[MAX_PROCESSES];
 	struct flexio_uar *flexio_uar[MAX_PROCESSES];		    /* FlexIO UAR */
 	struct flexio_event_handler *event_handler[MAX_PROCESSES]; /* Event handler on device */
 

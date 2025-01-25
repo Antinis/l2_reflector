@@ -217,7 +217,11 @@ int main(int argc, char **argv)
 
 
 	while (!force_quit)
+	{
+		printf("identy: %lx\n", *(uint64_t *)app_cfg.rq_transf[0].wqd_daddr);
 		sleep(1);
+	}
+		
 	
 	for(int i=0; i<NUM_PROCESSES; i++)
 	{
