@@ -34,6 +34,26 @@
 
 #include "l2_reflector_core.h"
 #include "../common/l2_reflector_common.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <numa.h>
+#include <time.h>
+#include <unistd.h>
+#include <numaif.h>
+#include <libflexio/flexio.h>
+
+#define rt_assert(cond, msg) if (!(cond)) { fprintf(stderr, "Assertion failed: %s\n", msg); exit(-1); }
+#define IPC_CREAT	01000		/* Create key if key does not exist. */
+#define IPC_EXCL	02000		/* Fail if key exists.  */
+#define IPC_NOWAIT	04000		/* Return error on wait.  */
+# define SHM_HUGETLB	04000	/* segment is mapped via hugetlb */
+#define MPOL_BIND        2
+
 
 DOCA_LOG_REGISTER(L2_REFLECTOR::CORE);
 
@@ -98,36 +118,38 @@ doca_error_t l2_reflector_setup_ibv_device(struct l2_reflector_config *app_cfg)
 
 doca_error_t l2_reflector_setup_device(struct l2_reflector_config *app_cfg)
 {
-	for(int i=0; i<NUM_PROCESSES; i++)
+	flexio_status result;
+
+	/* Create FlexIO Process and mkey */
+	struct flexio_process_attr process_attr = {NULL, 0};
+	result = flexio_process_create(app_cfg->ibv_ctx, l2_reflector_device, &process_attr, &app_cfg->flexio_process);
+	if (result != FLEXIO_STATUS_SUCCESS) {
+		DOCA_LOG_ERR("Could not create FlexIO process (%d)", result);
+		return DOCA_ERROR_DRIVER;
+	}
+
+	////
+	result=flexio_window_create(app_cfg->flexio_process, app_cfg->pd, &app_cfg->flexio_window);
+	if (result != FLEXIO_STATUS_SUCCESS) {
+		DOCA_LOG_ERR("Could not create FlexIO window (%d)", result);
+		return DOCA_ERROR_DRIVER;
+	}
+
+	app_cfg->flexio_uar = flexio_process_get_uar(app_cfg->flexio_process);
+
+	for(int i=0; i<NUM_THREADS; i++)
 	{
-		flexio_status result;
 		struct flexio_event_handler_attr event_handler_attr = {0};
-
-		/* Create FlexIO Process and mkey */
-		result = flexio_process_create(app_cfg->ibv_ctx, l2_reflector_device, NULL, &app_cfg->flexio_process[i]);
-		if (result != FLEXIO_STATUS_SUCCESS) {
-			DOCA_LOG_ERR("Could not create FlexIO process (%d)", result);
-			return DOCA_ERROR_DRIVER;
-		}
-
-		////
-		result=flexio_window_create(app_cfg->flexio_process[i], app_cfg->pd, &app_cfg->flexio_window[i]);
-		if (result != FLEXIO_STATUS_SUCCESS) {
-			DOCA_LOG_ERR("Could not create FlexIO window (%d)", result);
-			return DOCA_ERROR_DRIVER;
-		}
-
-		app_cfg->flexio_uar[i] = flexio_process_get_uar(app_cfg->flexio_process[i]);
-
 		event_handler_attr.host_stub_func = l2_reflector_device_event_handler;
 		event_handler_attr.affinity.type = FLEXIO_AFFINITY_STRICT;
 		event_handler_attr.affinity.id = i;
-		result = flexio_event_handler_create(app_cfg->flexio_process[i], &event_handler_attr, &app_cfg->event_handler[i]);
+		result = flexio_event_handler_create(app_cfg->flexio_process, &event_handler_attr, &app_cfg->event_handler[i]);
 		if (result != FLEXIO_STATUS_SUCCESS) {
 			DOCA_LOG_ERR("Could not create event handler (%d)", result);
 			return DOCA_ERROR_DRIVER;
 		}
 	}
+	
 
 	return DOCA_SUCCESS;
 }
@@ -287,15 +309,15 @@ static doca_error_t allocate_sq(struct l2_reflector_config *app_cfg, int idx)
 	struct flexio_cq_attr sqcq_attr = {.log_cq_depth = L2_LOG_CQ_RING_DEPTH,
 					   /* SQ does not need APU CQ */
 					   .element_type = FLEXIO_CQ_ELEMENT_TYPE_NON_DPA_CQ,
-					   .uar_id = flexio_uar_get_id(app_cfg->flexio_uar[idx]),
+					   .uar_id = flexio_uar_get_id(app_cfg->flexio_uar),
 					   .uar_base_addr = 0};
 	/* SQ attributes */
 	struct flexio_wq_attr sq_attr = {.log_wq_depth = L2_LOG_SQ_RING_DEPTH,
-					 .uar_id = flexio_uar_get_id(app_cfg->flexio_uar[idx]),
+					 .uar_id = flexio_uar_get_id(app_cfg->flexio_uar),
 					 .pd = app_cfg->pd};
 
 	/* Allocate memory for SQ's CQ */
-	result = allocate_cq_memory(app_cfg->flexio_process[idx], L2_LOG_CQ_RING_DEPTH, &app_cfg->sq_cq_transf[idx]);
+	result = allocate_cq_memory(app_cfg->flexio_process, L2_LOG_CQ_RING_DEPTH, &app_cfg->sq_cq_transf[idx]);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -303,7 +325,7 @@ static doca_error_t allocate_sq(struct l2_reflector_config *app_cfg, int idx)
 	sqcq_attr.cq_ring_qmem.daddr = app_cfg->sq_cq_transf[idx].cq_ring_daddr;
 
 	/* Create SQ's CQ */
-	ret = flexio_cq_create(app_cfg->flexio_process[idx], app_cfg->ibv_ctx, &sqcq_attr, &app_cfg->flexio_sq_cq_ptr[idx]);
+	ret = flexio_cq_create(app_cfg->flexio_process, app_cfg->ibv_ctx, &sqcq_attr, &app_cfg->flexio_sq_cq_ptr[idx]);
 	if (ret != FLEXIO_STATUS_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create FlexIO SQ's CQ");
 		return DOCA_ERROR_DRIVER;
@@ -315,13 +337,13 @@ static doca_error_t allocate_sq(struct l2_reflector_config *app_cfg, int idx)
 
 	/* Allocate memory for SQ */
 	log_sqd_bsize = L2_LOG_WQ_DATA_ENTRY_BSIZE + L2_LOG_SQ_RING_DEPTH;
-	result = allocate_sq_memory(app_cfg->flexio_process[idx], L2_LOG_SQ_RING_DEPTH, log_sqd_bsize, &app_cfg->sq_transf[idx]);
+	result = allocate_sq_memory(app_cfg->flexio_process, L2_LOG_SQ_RING_DEPTH, log_sqd_bsize, &app_cfg->sq_transf[idx]);
 	if (result != DOCA_SUCCESS)
 		return result;
 
 	sq_attr.wq_ring_qmem.daddr = app_cfg->sq_transf[idx].wq_ring_daddr;
 
-	ret = flexio_sq_create(app_cfg->flexio_process[idx], NULL, cq_num, &sq_attr, &app_cfg->flexio_sq_ptr[idx]);
+	ret = flexio_sq_create(app_cfg->flexio_process, NULL, cq_num, &sq_attr, &app_cfg->flexio_sq_ptr[idx]);
 	if (ret != FLEXIO_STATUS_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create FlexIO SQ");
 		return DOCA_ERROR_DRIVER;
@@ -385,6 +407,67 @@ static doca_error_t init_dpa_rq_ring(struct flexio_process *process,
 	return result;
 }
 
+size_t round_up(size_t size, size_t align) {
+    return (size + align - 1) & ~(align - 1);
+}
+
+void *get_huge_mem(uint32_t numa_node, size_t size) {
+	printf("Allocating huge pages!\n");
+    size = round_up(size, 2 * 1024 * 1024);
+    int shm_key, shm_id;
+
+    srand(time(NULL)); // Seed the random number generator
+
+    while (1) {
+        // Choose a positive SHM key
+        shm_key = rand() % RAND_MAX + 1; // Ensure it's positive
+
+        // Try to get an SHM region
+        shm_id = shmget(shm_key, size, IPC_CREAT | IPC_EXCL | 0666 | SHM_HUGETLB);
+
+        if (shm_id == -1) {
+            switch (errno) {
+                case EEXIST:
+                    DOCA_LOG_INFO("shm_key already exists. Try again.");
+                    continue; // shm_key already exists. Try again.
+
+                case EACCES:
+                    DOCA_LOG_ERR("Invalid access, maybe code is not illegal");
+                    exit(-1);
+
+                case EINVAL:
+                    DOCA_LOG_ERR("Invalid argument, maybe code is not illegal");
+                    exit(-1);
+
+                case ENOMEM:
+                    DOCA_LOG_ERR("No enough memory could be allocated, please ensure you have enough 2M hugepage on this NUMA\n");
+                    exit(-1);
+
+                default:
+                    DOCA_LOG_ERR("Unexpected error");
+                    exit(-1);
+            }
+        } else {
+            // shm_key worked. Break out of the while loop.
+            break;
+        }
+    }
+
+    void *shm_buf = shmat(shm_id, NULL, 0);
+    // rt_assert(shm_buf != (void *)-1, "HugeAlloc: shmat() failed. Key = %d", shm_key);
+    shmctl(shm_id, IPC_RMID, NULL);
+
+    const unsigned long nodemask = (1ul << (unsigned long)numa_node);
+    long ret = mbind(shm_buf, size, MPOL_BIND, &nodemask, sizeof(nodemask) * 8, 0);
+
+    if (ret) {
+        DOCA_LOG_ERR("mbind error %ld", ret);
+        exit(-1);
+    }
+
+    return shm_buf;
+}
+
 /*
  * Allocate RQ and CQ for the device
  *
@@ -404,13 +487,13 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 	struct flexio_cq_attr rqcq_attr = {.log_cq_depth = L2_LOG_CQ_RING_DEPTH,
 					   .element_type = FLEXIO_CQ_ELEMENT_TYPE_DPA_THREAD,
 					   .thread = flexio_event_handler_get_thread(app_cfg->event_handler[idx]),
-					   .uar_id = flexio_uar_get_id(app_cfg->flexio_uar[idx]),
+					   .uar_id = flexio_uar_get_id(app_cfg->flexio_uar),
 					   .uar_base_addr = 0};
 	/* RQ attributes */
 	struct flexio_wq_attr rq_attr = {.log_wq_depth = L2_LOG_RQ_RING_DEPTH, .pd = app_cfg->pd};
 
 	/* Allocate memory for RQ's CQ */
-	result = allocate_cq_memory(app_cfg->flexio_process[idx], L2_LOG_CQ_RING_DEPTH, &app_cfg->rq_cq_transf[idx]);
+	result = allocate_cq_memory(app_cfg->flexio_process, L2_LOG_CQ_RING_DEPTH, &app_cfg->rq_cq_transf[idx]);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -418,7 +501,7 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 	rqcq_attr.cq_ring_qmem.daddr = app_cfg->rq_cq_transf[idx].cq_ring_daddr;
 
 	/* Create CQ and RQ */
-	ret = flexio_cq_create(app_cfg->flexio_process[idx], NULL, &rqcq_attr, &app_cfg->flexio_rq_cq_ptr[idx]);
+	ret = flexio_cq_create(app_cfg->flexio_process, NULL, &rqcq_attr, &app_cfg->flexio_rq_cq_ptr[idx]);
 	if (ret != FLEXIO_STATUS_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create FlexIO RQ's CQ");
 		return DOCA_ERROR_DRIVER;
@@ -436,7 +519,8 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 	// 	return DOCA_ERROR_DRIVER;
 	// }
 
-	void *wqd_daddr_host=malloc((LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE) + 63) & (~63));	// calloc函数已清零
+	// void *wqd_daddr_host=malloc((LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE) + 63) & (~63));	// calloc函数已清零
+	void *wqd_daddr_host=get_huge_mem(0, (LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE) + 63) & (~63));
 	if (!wqd_daddr_host) {
 		DOCA_LOG_ERR("Failed to allocate memory for RQ data buffer on HOST");
 		return DOCA_ERROR_DRIVER;
@@ -447,7 +531,7 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 	printf("%lx\n", *(uint64_t *)wqd_daddr_host);
 	
 
-	flexio_buf_dev_alloc(app_cfg->flexio_process[idx],
+	flexio_buf_dev_alloc(app_cfg->flexio_process,
 			     LOG2VALUE(L2_LOG_CQ_RING_DEPTH) * sizeof(struct mlx5_wqe_data_seg),
 			     &app_cfg->rq_transf[idx].wq_ring_daddr);
 	if (app_cfg->rq_transf[idx].wq_ring_daddr == 0x0) {
@@ -455,7 +539,7 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 		return DOCA_ERROR_DRIVER;
 	}
 
-	result = allocate_dbr(app_cfg->flexio_process[idx], &app_cfg->rq_transf[idx].wq_dbr_daddr);
+	result = allocate_dbr(app_cfg->flexio_process, &app_cfg->rq_transf[idx].wq_dbr_daddr);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -478,7 +562,7 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 
 	app_cfg->sq_transf[idx].wqd_mkey_id = mkey_id;
 
-	result = init_dpa_rq_ring(app_cfg->flexio_process[idx],
+	result = init_dpa_rq_ring(app_cfg->flexio_process,
 				  app_cfg->rq_transf[idx].wq_ring_daddr,
 				  L2_LOG_CQ_RING_DEPTH,
 				  app_cfg->rq_transf[idx].wqd_daddr,
@@ -491,7 +575,7 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 	rq_attr.wq_dbr_qmem.daddr = app_cfg->rq_transf[idx].wq_dbr_daddr;
 	rq_attr.wq_ring_qmem.daddr = app_cfg->rq_transf[idx].wq_ring_daddr;
 
-	ret = flexio_rq_create(app_cfg->flexio_process[idx], NULL, cq_num, &rq_attr, &app_cfg->flexio_rq_ptr[idx]);
+	ret = flexio_rq_create(app_cfg->flexio_process, NULL, cq_num, &rq_attr, &app_cfg->flexio_rq_ptr[idx]);
 	if (ret != FLEXIO_STATUS_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create FlexIO SQ");
 		return DOCA_ERROR_DRIVER;
@@ -509,7 +593,7 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 	dbr[0] = htobe32(rcv_counter & 0xffff);
 	dbr[1] = htobe32(send_counter & 0xffff);
 
-	ret = flexio_host2dev_memcpy(app_cfg->flexio_process[idx], dbr, sizeof(dbr), app_cfg->rq_transf[idx].wq_dbr_daddr);
+	ret = flexio_host2dev_memcpy(app_cfg->flexio_process, dbr, sizeof(dbr), app_cfg->rq_transf[idx].wq_dbr_daddr);
 	if (ret != FLEXIO_STATUS_SUCCESS) {
 		DOCA_LOG_ERR("Failed to modify RQ's DBR");
 		return DOCA_ERROR_DRIVER;
@@ -525,14 +609,14 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
  */
 static void l2_reflector_rq_destroy(struct l2_reflector_config *app_cfg)
 {
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
 		flexio_status ret = FLEXIO_STATUS_SUCCESS;
 
 		ret |= flexio_rq_destroy(app_cfg->flexio_rq_ptr[i]);
 		// ret |= flexio_device_mkey_destroy(app_cfg->rqd_mkey[i]);
-		ret |= flexio_buf_dev_free(app_cfg->flexio_process[i], app_cfg->rq_transf[i].wq_dbr_daddr);
-		ret |= flexio_buf_dev_free(app_cfg->flexio_process[i], app_cfg->rq_transf[i].wq_ring_daddr);
+		ret |= flexio_buf_dev_free(app_cfg->flexio_process, app_cfg->rq_transf[i].wq_dbr_daddr);
+		ret |= flexio_buf_dev_free(app_cfg->flexio_process, app_cfg->rq_transf[i].wq_ring_daddr);
 		// ret |= flexio_buf_dev_free(app_cfg->flexio_process[i], app_cfg->rq_transf[i].wqd_daddr);
 
 		if (ret != FLEXIO_STATUS_SUCCESS)
@@ -547,14 +631,14 @@ static void l2_reflector_rq_destroy(struct l2_reflector_config *app_cfg)
  */
 static void l2_reflector_sq_destroy(struct l2_reflector_config *app_cfg)
 {
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
 		flexio_status ret = FLEXIO_STATUS_SUCCESS;
 
 		ret |= flexio_sq_destroy(app_cfg->flexio_sq_ptr[i]);
 		ret |= flexio_device_mkey_destroy(app_cfg->sqd_mkey[i]);
-		ret |= flexio_buf_dev_free(app_cfg->flexio_process[i], app_cfg->sq_transf[i].wq_dbr_daddr);
-		ret |= flexio_buf_dev_free(app_cfg->flexio_process[i], app_cfg->sq_transf[i].wq_ring_daddr);
+		ret |= flexio_buf_dev_free(app_cfg->flexio_process, app_cfg->sq_transf[i].wq_dbr_daddr);
+		ret |= flexio_buf_dev_free(app_cfg->flexio_process, app_cfg->sq_transf[i].wq_ring_daddr);
 		// ret |= flexio_buf_dev_free(app_cfg->flexio_process, app_cfg->sq_transf.wqd_daddr);
 
 		if (ret != FLEXIO_STATUS_SUCCESS)
@@ -590,15 +674,15 @@ static void l2_reflector_cq_destroy(struct flexio_process *flexio_process,
  */
 static void dev_queues_destroy(struct l2_reflector_config *app_cfg)
 {
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
 		if(i==0)
 		{
 			l2_reflector_rq_destroy(app_cfg);
 			l2_reflector_sq_destroy(app_cfg);
 		}
-		l2_reflector_cq_destroy(app_cfg->flexio_process[i], app_cfg->flexio_rq_cq_ptr[i], app_cfg->rq_cq_transf[i]);
-		l2_reflector_cq_destroy(app_cfg->flexio_process[i], app_cfg->flexio_sq_cq_ptr[i], app_cfg->sq_cq_transf[i]);
+		l2_reflector_cq_destroy(app_cfg->flexio_process, app_cfg->flexio_rq_cq_ptr[i], app_cfg->rq_cq_transf[i]);
+		l2_reflector_cq_destroy(app_cfg->flexio_process, app_cfg->flexio_sq_cq_ptr[i], app_cfg->sq_cq_transf[i]);
 	}
 }
 
@@ -608,7 +692,7 @@ doca_error_t l2_reflector_allocate_device_resources(struct l2_reflector_config *
 	flexio_status ret;
 	
 
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
 		result = allocate_sq(app_cfg, i);
 		if (result != DOCA_SUCCESS)
@@ -616,7 +700,7 @@ doca_error_t l2_reflector_allocate_device_resources(struct l2_reflector_config *
 	}
 	
 	
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
 		result = allocate_rq(app_cfg, i);
 		if (result != DOCA_SUCCESS)
@@ -624,7 +708,7 @@ doca_error_t l2_reflector_allocate_device_resources(struct l2_reflector_config *
 	}
 	
 	
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
 		app_cfg->dev_data[i] = (struct l2_reflector_data *)calloc(1, sizeof(*app_cfg->dev_data[i]));
 		if (app_cfg->dev_data[i] == NULL) {
@@ -638,9 +722,9 @@ doca_error_t l2_reflector_allocate_device_resources(struct l2_reflector_config *
 		app_cfg->dev_data[i]->rq_cq_data = app_cfg->rq_cq_transf[i];
 		app_cfg->dev_data[i]->rq_data = app_cfg->rq_transf[i];
 		app_cfg->dev_data[i]->idx=i;
-		app_cfg->dev_data[i]->flexio_window_id=flexio_window_get_id(app_cfg->flexio_window[i]);
+		app_cfg->dev_data[i]->flexio_window_id=flexio_window_get_id(app_cfg->flexio_window);
 		
-		ret = flexio_copy_from_host(app_cfg->flexio_process[i],
+		ret = flexio_copy_from_host(app_cfg->flexio_process,
 						app_cfg->dev_data[i],
 						sizeof(*app_cfg->dev_data[i]),
 						&app_cfg->dev_data_daddr[i]);
@@ -779,9 +863,8 @@ doca_error_t l2_reflector_create_steering_rule_rx(struct l2_reflector_config *ap
 	}
 
 	/* Create rule */
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
-		printf("creating %d\n", i);
 		app_cfg->rx_rule[i] = calloc(1, sizeof(*app_cfg->rx_rule[i]));
 		if (app_cfg->rx_rule[i] == NULL) {
 			DOCA_LOG_ERR("Failed to allocate memory");
@@ -819,7 +902,7 @@ doca_error_t l2_reflector_create_steering_rule_rx(struct l2_reflector_config *ap
 
 exit_with_error:
 	free(match_mask);
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
 		if (app_cfg->rx_rule[i]) {
 			destroy_rule(app_cfg->rx_rule[i]);
@@ -945,7 +1028,7 @@ exit_with_error:
 		app_cfg->tx_root_rule = NULL;
 	}
 	if (app_cfg->tx_rule) {
-		for(int i=0; i<NUM_PROCESSES; i++)
+		for(int i=0; i<NUM_THREADS; i++)
 			destroy_rule(app_cfg->rx_rule[i]);
 		app_cfg->tx_rule = NULL;
 	}
@@ -960,16 +1043,16 @@ exit_with_error:
 void l2_reflector_device_resources_destroy(struct l2_reflector_config *app_cfg)
 {
 	dev_queues_destroy(app_cfg);
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
-		flexio_buf_dev_free(app_cfg->flexio_process[i], app_cfg->dev_data_daddr[i]);
+		flexio_buf_dev_free(app_cfg->flexio_process, app_cfg->dev_data_daddr[i]);
 		free(app_cfg->dev_data[i]);
 	}
 }
 
 void l2_reflector_steering_rules_destroy(struct l2_reflector_config *app_cfg)
 {
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
 		if (app_cfg->rx_rule[i]) {
 			destroy_rule(app_cfg->rx_rule[i]);
@@ -1007,7 +1090,7 @@ void l2_reflector_device_destroy(struct l2_reflector_config *app_cfg)
 {
 	flexio_status ret = FLEXIO_STATUS_SUCCESS;
 
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
 		ret |= flexio_event_handler_destroy(app_cfg->event_handler[i]);
 
@@ -1036,12 +1119,8 @@ void l2_reflector_destroy(struct l2_reflector_config *app_cfg)
 	l2_reflector_ibv_device_destroy(app_cfg);
 	
 	/* Destroy FlexIO process */
-	for(int i=0; i<NUM_PROCESSES; i++)
-	{
-		if (flexio_process_destroy(app_cfg->flexio_process[i]) != FLEXIO_STATUS_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy FlexIO process");
-	}
-	
+	if (flexio_process_destroy(app_cfg->flexio_process) != FLEXIO_STATUS_SUCCESS)
+		DOCA_LOG_ERR("Failed to destroy FlexIO process");
 
 	/* Close ib device */
 	ibv_close_device(app_cfg->ibv_ctx);

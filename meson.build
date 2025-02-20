@@ -26,6 +26,7 @@ flexio_build_device = meson.current_source_dir() + '/build_flexio_device.sh'
 device_builder = find_program(flexio_build_device)
 
 source_file = meson.current_source_dir() + '/device/l2_reflector_device.c'
+numa_dep = dependency('numa', required : true)
 
 # Build device code ./build_flexio_device.sh <app name> <source file> <output dir>
 dpa_code = custom_target('L2_REFLECTOR_DEVICE',
@@ -35,7 +36,7 @@ dpa_code = custom_target('L2_REFLECTOR_DEVICE',
 			meson.current_build_dir()],
 		output : APP_NAME + '_device.a')
 
-dpa_device_lib = static_library(APP_NAME + '_device', link_with : dpa_code)
+dpa_device_lib = static_library(APP_NAME + '_device', link_with : dpa_code, dependencies : [numa_dep])
 
 old_common_dir_path = common_dir_path
 common_dir_path = '../../common'

@@ -40,10 +40,6 @@
 
 
 
-
-
-
-
 DOCA_LOG_REGISTER(L2_REFLECTOR);
 
 static bool force_quit; /* Set to true to terminate the application */
@@ -150,28 +146,29 @@ int main(int argc, char **argv)
 	
 
 
-	struct flexio_msg_stream *stream[NUM_PROCESSES];
-	for(int i=0; i<NUM_PROCESSES; i++)
-	{
-		flexio_msg_stream_attr_t stream_fattr;
-		memset(&stream_fattr, 0, sizeof(stream_fattr));
-		stream_fattr.data_bsize = 2048 * 2048;
-		stream_fattr.sync_mode = FLEXIO_LOG_DEV_SYNC_MODE_SYNC;
-		// pthread_t *ppthread=NULL;
-		flexio_msg_stream_create(
-			app_cfg.flexio_process[i],
-			&stream_fattr,
-			stdout,
-			NULL,
-			&stream[i]
-		);
-	}
+	struct flexio_msg_stream *stream;
+	flexio_msg_stream_attr_t stream_fattr;
+	memset(&stream_fattr, 0, sizeof(stream_fattr));
+	stream_fattr.uar=app_cfg.flexio_uar;
+	stream_fattr.data_bsize = 4 * 2048;
+	stream_fattr.sync_mode = FLEXIO_LOG_DEV_SYNC_MODE_SYNC;
+	stream_fattr.level = FLEXIO_MSG_DEV_DEBUG;
+	stream_fattr.stream_name="DEFAULT STREAM";
+	stream_fattr.mgmt_affinity.type = FLEXIO_AFFINITY_NONE;
+	// pthread_t *ppthread=NULL;
+	flexio_msg_stream_create(
+		app_cfg.flexio_process,
+		&stream_fattr,
+		stdout,
+		NULL,
+		&stream
+	);
 	
 
 	/* Run init function on device */
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
-		ret = flexio_process_call(app_cfg.flexio_process[i],
+		ret = flexio_process_call(app_cfg.flexio_process,
 					&l2_reflector_device_init,
 					&rpc_ret_val,
 					app_cfg.dev_data_daddr[i]);
@@ -195,9 +192,9 @@ int main(int argc, char **argv)
 		goto rule_cleanup;
 	}
 
-	for(int i=0; i<NUM_PROCESSES; i++)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
-		ret = flexio_event_handler_run(app_cfg.event_handler[i], 0);
+		ret = flexio_event_handler_run(app_cfg.event_handler[i], i);
 		if (ret != FLEXIO_STATUS_SUCCESS) {
 			DOCA_LOG_ERR("Failed to run event handler on device");
 			goto rule_cleanup;
@@ -218,15 +215,14 @@ int main(int argc, char **argv)
 
 	while (!force_quit)
 	{
-		printf("identy: %lx\n", *(uint64_t *)app_cfg.rq_transf[0].wqd_daddr);
+		// printf("identy: %lx\n", *(uint64_t *)app_cfg.rq_transf[0].wqd_daddr);
+		// printf("identy: %lx\n", *(uint64_t *)app_cfg.rq_transf[2].wqd_daddr);
+		// printf("identy: %lx\n", *(uint64_t *)app_cfg.rq_transf[4].wqd_daddr);
+		// printf("identy: %lx\n", *(uint64_t *)app_cfg.rq_transf[6].wqd_daddr);
 		sleep(1);
 	}
 		
-	
-	for(int i=0; i<NUM_PROCESSES; i++)
-	{
-		flexio_msg_stream_destroy(stream[i]);
-	}
+	flexio_msg_stream_destroy(stream);
 	
 	l2_reflector_destroy(&app_cfg);
 	return EXIT_SUCCESS;

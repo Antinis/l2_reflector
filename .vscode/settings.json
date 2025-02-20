@@ -8,6 +8,13 @@
         "string_view": "c",
         "cstddef": "c",
         "functional": "c",
-        "cstdlib": "c"
+        "cstdlib": "c",
+        "mlx5_api.h": "c",
+        "numa.h": "c",
+        "time.h": "c",
+        "numaif.h": "c",
+        "unistd.h": "c",
+        "flexio.h": "c",
+        "gflags.h": "c"
     }
 }

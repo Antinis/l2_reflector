@@ -33,6 +33,11 @@
 
 #define L2_LOG_WQ_DATA_ENTRY_BSIZE 10 /* WQ buffer logarithmic size */
 
+#define MAX_THREADS 64
+#define NUM_THREADS 64
+
+#define LOG2VALUE(l) (1UL << (l)) /* 2^l */
+
 /* Queues index mask, represents the index of the last CQE/WQE in the queue */
 #define L2_CQ_IDX_MASK ((1 << L2_LOG_CQ_RING_DEPTH) - 1)
 #define L2_RQ_IDX_MASK ((1 << L2_LOG_RQ_RING_DEPTH) - 1)

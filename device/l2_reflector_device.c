@@ -88,7 +88,7 @@ struct host_rq_ctx_t {
 };
 
 /* Device context */
-static struct {
+struct device_context{
 	uint32_t lkey;		  /* Local memory key */
 	uint32_t is_initialized;  /* Initialization flag */
 	struct cq_ctx_t rqcq_ctx; /* RQ CQ context */
@@ -98,7 +98,9 @@ static struct {
 	struct host_rq_ctx_t host_rq_ctx;
 	// struct dt_ctx_t dt_ctx;	  /* DT context */
 	uint32_t packets_count;	  /* Number of processed packets */
-} dev_ctx = {0};
+};
+
+static struct device_context dev_ctxs[MAX_THREADS] = {0};
 
 // struct flexio_dev_wqe_rcv_data_seg *buffer_ring_base_addr=dev_ctx.rq_ctx.rq_ring;
 // int ptr_head_of_tx=0;
@@ -251,54 +253,75 @@ flexio_uintptr_t get_host_buffer_with_dtctx(struct flexio_dev_thread_ctx *dtctx,
 	return host_buffer;
 }
 
+inline static void init_send_sq(struct sq_ctx_t *sq_ctx, uint32_t entry_size, uint32_t lkey) {
+    for (uint32_t i = 0; i < entry_size; i++) {
+        union flexio_dev_sqe_seg *swqe;
+        swqe = get_next_sqe(sq_ctx, L2_SQ_IDX_MASK);
+        flexio_dev_swqe_seg_ctrl_set(swqe, i, sq_ctx->sq_number,
+            MLX5_CTRL_SEG_CE_CQE_ON_CQE_ERROR, FLEXIO_CTRL_SEG_SEND_EN);
+
+        swqe = get_next_sqe(sq_ctx, L2_SQ_IDX_MASK);
+        flexio_dev_swqe_seg_eth_set(swqe, 0, 0, 0, NULL);
+
+        swqe = get_next_sqe(sq_ctx, L2_SQ_IDX_MASK);
+        flexio_dev_swqe_seg_mem_ptr_data_set(swqe, 0, lkey, 0);
+
+        swqe = get_next_sqe(sq_ctx, L2_SQ_IDX_MASK);
+    }
+    sq_ctx->sq_wqe_seg_idx = 0;
+}
+
 __dpa_rpc__ uint64_t l2_reflector_device_init(uint64_t data)
 {
 	struct flexio_dev_thread_ctx *dtctx;
 	flexio_dev_get_thread_ctx(&dtctx);
 
 	struct l2_reflector_data *shared_data = (struct l2_reflector_data *)data;
+	struct device_context *dev_ctx = &dev_ctxs[shared_data->idx];
 
-	dev_ctx.lkey = shared_data->sq_data.wqd_mkey_id;
-	dev_ctx.host_rq_ctx.rkey=shared_data->rq_data.wqd_mkey_id;
+	dev_ctx->lkey = shared_data->sq_data.wqd_mkey_id;
+	dev_ctx->host_rq_ctx.rkey=shared_data->rq_data.wqd_mkey_id;
 	////////
-	dev_ctx.host_rq_ctx.rq_window_id=shared_data->flexio_window_id;
-	dev_ctx.host_rq_ctx.host_rx_buff=(void *)shared_data->rq_data.wqd_daddr;
+	dev_ctx->host_rq_ctx.rq_window_id=shared_data->flexio_window_id;
+	dev_ctx->host_rq_ctx.host_rx_buff=(void *)shared_data->rq_data.wqd_daddr;
 	
-	init_cq(shared_data->rq_cq_data, &dev_ctx.rqcq_ctx);
-	init_rq(shared_data->rq_data, &dev_ctx.rq_ctx);
-	init_cq(shared_data->sq_cq_data, &dev_ctx.sqcq_ctx);
-	init_sq(shared_data->sq_data, &dev_ctx.sq_ctx);
+	init_cq(shared_data->rq_cq_data, &dev_ctx->rqcq_ctx);
+	init_rq(shared_data->rq_data, &dev_ctx->rq_ctx);
+	init_cq(shared_data->sq_cq_data, &dev_ctx->sqcq_ctx);
+	init_sq(shared_data->sq_data, &dev_ctx->sq_ctx);
 
-	dev_ctx.is_initialized = 1;
+	////////
+	init_send_sq(&dev_ctx->sq_ctx, LOG2VALUE(L2_LOG_SQ_RING_DEPTH), dev_ctx->lkey);
+
+	dev_ctx->is_initialized = 1;
 
 
 
-	flexio_dev_print("DEVICE:: DEBUG: DEVICE INITIALIZING #%d\n", shared_data->idx);
-
-	// flexio_dev_print("%lx\n", (uint64_t)dev_ctx.rq_ctx.rq_dbr);
-
-	// struct flexio_dev_wqe_rcv_data_seg *wqe=dev_ctx.rq_ctx.rq_ring;
-	// flexio_dev_print("	RQ buffer:\n");
-	// for(int i=0; i<8; i++)
-	// {
-	// 	flexio_dev_print("    RQE #%d, addr: 0x%lx\n", i, ntohl64(wqe->addr));
-	// 	wqe++;
-	// }
+	flexio_dev_print("DEVICE:: DEVICE INITIALIZED #%d, %d\n", shared_data->idx, flexio_dev_get_thread_id(dtctx));
 
 	return 0;
 }
 
 
 
+inline static union flexio_dev_sqe_seg *get_next_data_sqe(struct sq_ctx_t *sq_ctx, uint32_t sq_idx_mask) {
+    union flexio_dev_sqe_seg *res = &sq_ctx->sq_ring[(sq_ctx->sq_wqe_seg_idx + 2) & sq_idx_mask];
+    sq_ctx->sq_wqe_seg_idx += 4;
+    return res;
+}
 
 /*
  * This function is called when a new packet is received to RQ's CQ.
  * Upon receiving a packet, the function will iterate over all received packets and process them.
  * Once all packets in the CQ are processed, the CQ will be rearmed to receive new packets events.
  */
-void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
+void __dpa_global__ l2_reflector_device_event_handler(uint64_t thread_index)
 {
 	struct flexio_dev_thread_ctx *dtctx;
+	flexio_dev_get_thread_ctx(&dtctx);
+	flexio_dev_print("DEVICE:: DEVICE REACHING #%d, %ld\n", flexio_dev_get_thread_id(dtctx), thread_index);
+
+	struct device_context *dev_ctx = &dev_ctxs[thread_index];
 	
 	int i;
 	uint32_t cqe_cnt=0;
@@ -311,26 +334,26 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 	union flexio_dev_sqe_seg *swqe[BATCH_SIZE*4];
 	size_t src_mac;
 	size_t dst_mac;
-	uint16_t src_udpport;
-	uint16_t dst_udpport;
+	// uint16_t src_udpport;
+	// uint16_t dst_udpport;
 
-	// int cnt=0;
-
-	flexio_dev_get_thread_ctx(&dtctx);
-
-	if (dev_ctx.is_initialized == 0)
+	if (dev_ctx->is_initialized == 0)
+	{
+		flexio_dev_print("DEVICE:: OHNO\n");
 		flexio_dev_thread_reschedule();
+	}
+		
 	
-	flexio_dev_print("DEVICE:: DEBUG: DEVICE REACHING #%d\n", flexio_dev_get_thread_id(dtctx));
+	
 
-	dev_ctx.host_rq_ctx.dpa_rx_buff=get_host_buffer_with_dtctx(dtctx, dev_ctx.host_rq_ctx.rq_window_id, dev_ctx.host_rq_ctx.rkey, dev_ctx.host_rq_ctx.host_rx_buff);
+	dev_ctx->host_rq_ctx.dpa_rx_buff=get_host_buffer_with_dtctx(dtctx, dev_ctx->host_rq_ctx.rq_window_id, dev_ctx->host_rq_ctx.rkey, dev_ctx->host_rq_ctx.host_rx_buff);
 
 	
 								
 	while(1)
 	{				
 		// flexio_dev_print("%d\n", cnt++);
-		if(flexio_dev_cqe_get_owner(&(dev_ctx.rqcq_ctx.cq_ring[dev_ctx.rqcq_ctx.cq_idx+cqe_cnt & L2_CQ_IDX_MASK])) != dev_ctx.rqcq_ctx.cq_hw_owner_bit)
+		if(flexio_dev_cqe_get_owner(&(dev_ctx->rqcq_ctx.cq_ring[dev_ctx->rqcq_ctx.cq_idx+cqe_cnt & L2_CQ_IDX_MASK])) != dev_ctx->rqcq_ctx.cq_hw_owner_bit)
 		{
 			// flexio_dev_print("owner: %d, %d, %d\n", flexio_dev_cqe_get_owner(&(dev_ctx.rqcq_ctx.cq_ring[dev_ctx.rqcq_ctx.cq_idx+cqe_cnt & L2_CQ_IDX_MASK])), dev_ctx.rqcq_ctx.cq_hw_owner_bit, dev_ctx.rqcq_ctx.cq_idx+cqe_cnt);
 			cqe_cnt++;
@@ -344,11 +367,11 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 			// 获取RQ CQE
 			for(i=0; i<BATCH_SIZE; i++)
 			{
-				cqe_now=&(dev_ctx.rqcq_ctx.cq_ring[dev_ctx.rqcq_ctx.cq_idx+i & L2_CQ_IDX_MASK]);
+				cqe_now=&(dev_ctx->rqcq_ctx.cq_ring[dev_ctx->rqcq_ctx.cq_idx+i & L2_CQ_IDX_MASK]);
 				rq_wqe_idx = flexio_dev_cqe_get_wqe_counter(cqe_now);
-				data_host_ptr[i]=flexio_dev_rwqe_get_addr(&dev_ctx.rq_ctx.rq_ring[rq_wqe_idx & L2_RQ_IDX_MASK]);
+				data_host_ptr[i]=flexio_dev_rwqe_get_addr(&dev_ctx->rq_ctx.rq_ring[rq_wqe_idx & L2_RQ_IDX_MASK]);
 				data_sz[i]=flexio_dev_cqe_get_byte_cnt(cqe_now);
-				data_dpa_ptr[i]=(char *)((flexio_uintptr_t)data_host_ptr[i] - (flexio_uintptr_t)dev_ctx.host_rq_ctx.host_rx_buff + dev_ctx.host_rq_ctx.dpa_rx_buff);
+				data_dpa_ptr[i]=(char *)((flexio_uintptr_t)data_host_ptr[i] - (flexio_uintptr_t)dev_ctx->host_rq_ctx.host_rx_buff + dev_ctx->host_rq_ctx.dpa_rx_buff);
 				// flexio_dev_print("%lx, %lx\n", dev_ctx.host_rq_ctx.dpa_rx_buff, (flexio_uintptr_t)dev_ctx.host_rq_ctx.host_rx_buff);
 			}
 			// flexio_dev_print("222\n");
@@ -382,10 +405,10 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 				*(size_t *)(data_dpa_ptr[i] + 6) = (src_mac & 0x0000FFFFFFFFFFFF) | (0x0008ll << 48);
 
 				// 交换UDP PORT
-				src_udpport = *(uint16_t *)(data_dpa_ptr[i]+34);
-				dst_udpport = *(uint16_t *)(data_dpa_ptr[i]+36);
-				*(uint16_t *)(data_dpa_ptr[i]+34) = dst_udpport;
-				*(uint16_t *)(data_dpa_ptr[i]+36) = (src_udpport & 0xFFFF);
+				// src_udpport = *(uint16_t *)(data_dpa_ptr[i]+34);
+				// dst_udpport = *(uint16_t *)(data_dpa_ptr[i]+36);
+				// *(uint16_t *)(data_dpa_ptr[i]+34) = dst_udpport;
+				// *(uint16_t *)(data_dpa_ptr[i]+36) = (src_udpport & 0xFFFF);
 
 				// for (int byte = 34; byte < 34+NB_UDP_PORT_BYTES; byte++) {
 				// 	char tmp = data_ptr[i][byte];
@@ -397,56 +420,58 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t __unused arg0)
 
 			// 生成新SQ CQE
 			/* Take first segment for SQ WQE (3 segments will be used) */
-			for(i=0; i<BATCH_SIZE*4; i++)
+			for(i=0; i<BATCH_SIZE; i++)
 			{
-				swqe[i]=get_next_sqe(&dev_ctx.sq_ctx, L2_SQ_IDX_MASK);
+				swqe[i]=get_next_data_sqe(&dev_ctx->sq_ctx, L2_SQ_IDX_MASK);
 			}
 			
 			/* Fill out 1-st segment (Control) */
-			for(i=0; i<BATCH_SIZE; i++)
-			{
-				flexio_dev_swqe_seg_ctrl_set(
-					swqe[i*4],
-					dev_ctx.sq_ctx.sq_pi+i,
-					dev_ctx.sq_ctx.sq_number,
-					MLX5_CTRL_SEG_CE_CQE_ON_CQE_ERROR,
-					FLEXIO_CTRL_SEG_SEND_EN
-				);
-			}
+			// for(i=0; i<BATCH_SIZE; i++)
+			// {
+			// 	flexio_dev_swqe_seg_ctrl_set(
+			// 		swqe[i*4],
+			// 		dev_ctx->sq_ctx.sq_pi+i,
+			// 		dev_ctx->sq_ctx.sq_number,
+			// 		MLX5_CTRL_SEG_CE_CQE_ON_CQE_ERROR,
+			// 		FLEXIO_CTRL_SEG_SEND_EN
+			// 	);
+			// }
 			/* Fill out 2-nd segment (Ethernet) */
-			for(i=0; i<BATCH_SIZE; i++)
-			{
-				flexio_dev_swqe_seg_eth_set(swqe[i*4+1], MSS, CHECKSUM, 0, NULL);
-			}
+			// for(i=0; i<BATCH_SIZE; i++)
+			// {
+			// 	flexio_dev_swqe_seg_eth_set(swqe[i*4+1], MSS, CHECKSUM, 0, NULL);
+			// }
 			/* Fill out 3-rd segment (Data) */
 			for(i=0; i<BATCH_SIZE; i++)
 			{
-				flexio_dev_swqe_seg_mem_ptr_data_set(swqe[i*4+2], data_sz[i], dev_ctx.lkey, (uint64_t)data_host_ptr[i]);
+				swqe[i]->mem_ptr_send_data.byte_count = cpu_to_be32(data_sz[i]);
+    			swqe[i]->mem_ptr_send_data.addr = cpu_to_be64((uint64_t)data_host_ptr[i]);
+				// flexio_dev_swqe_seg_mem_ptr_data_set(swqe[i], data_sz[i], dev_ctx->lkey, (uint64_t)data_host_ptr[i]);
 			}
 			
 			/* Ring DB */
-			dev_ctx.sq_ctx.sq_pi+=BATCH_SIZE;
+			dev_ctx->sq_ctx.sq_pi+=BATCH_SIZE;
 			__dpa_thread_memory_writeback();
     		__dpa_thread_window_writeback();
-			__dpa_thread_fence(__DPA_MEMORY, __DPA_W, __DPA_W);
-			flexio_dev_qp_sq_ring_db(dtctx, dev_ctx.sq_ctx.sq_pi, dev_ctx.sq_ctx.sq_number);
+			// __dpa_thread_fence(__DPA_MEMORY, __DPA_W, __DPA_W);
+			flexio_dev_qp_sq_ring_db(dtctx, dev_ctx->sq_ctx.sq_pi, dev_ctx->sq_ctx.sq_number);
 			// 没有一个批量递增的API，使这里很占时间而又不能被优化
 			for(i=0; i<BATCH_SIZE; i++)
 			{
-				flexio_dev_dbr_rq_inc_pi(dev_ctx.rq_ctx.rq_dbr);
+				flexio_dev_dbr_rq_inc_pi(dev_ctx->rq_ctx.rq_dbr);
 			}
 			
 			
 			// 更新SCQ的头指针并向硬件同步
-			dev_ctx.rqcq_ctx.cq_idx+=BATCH_SIZE;	// cq_idx就是consumer pointer (index)
+			dev_ctx->rqcq_ctx.cq_idx+=BATCH_SIZE;	// cq_idx就是consumer pointer (index)
 			// flexio_dev_print("increasing: %d\n", dev_ctx.rqcq_ctx.cq_idx);
 			/* check for wrap around */
-			if (!(dev_ctx.rqcq_ctx.cq_idx & L2_CQ_IDX_MASK))
+			if (!(dev_ctx->rqcq_ctx.cq_idx & L2_CQ_IDX_MASK))
 			{
 				// flexio_dev_print("flapping: %d, %d\n", dev_ctx.rqcq_ctx.cq_idx, dev_ctx.rqcq_ctx.cq_hw_owner_bit);
-				dev_ctx.rqcq_ctx.cq_hw_owner_bit = !dev_ctx.rqcq_ctx.cq_hw_owner_bit;	
+				dev_ctx->rqcq_ctx.cq_hw_owner_bit = !dev_ctx->rqcq_ctx.cq_hw_owner_bit;	
 			}
-			flexio_dev_dbr_cq_set_ci(dev_ctx.rqcq_ctx.cq_dbr, dev_ctx.rqcq_ctx.cq_idx);
+			flexio_dev_dbr_cq_set_ci(dev_ctx->rqcq_ctx.cq_dbr, dev_ctx->rqcq_ctx.cq_idx);
 
 			// flexio_dev_print("Finished one round\n");
 		}
