@@ -32,7 +32,7 @@
 #define L2_LOG_CQ_RING_DEPTH 7 /* 2^7 entries */
 
 #define L2_LOG_WQ_DATA_ENTRY_BSIZE 10 /* WQ buffer logarithmic size */
-#define L2_LOG_WQ_DATA_ENTRY_STRIDE 10
+#define L2_LOG_WQ_DATA_ENTRY_STRIDE 6
 
 #define MAX_THREADS 128
 #define NUM_THREADS 128

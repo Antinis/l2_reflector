@@ -282,8 +282,8 @@ __dpa_rpc__ uint64_t l2_reflector_device_init(uint64_t data)
 	dev_ctx->lkey = shared_data->sq_data.wqd_mkey_id;
 	dev_ctx->host_rq_ctx.rkey=shared_data->rq_data.wqd_mkey_id;
 	////////
-	dev_ctx->host_rq_ctx.rq_window_id=shared_data->flexio_window_id;
-	dev_ctx->host_rq_ctx.host_rx_buff=(void *)shared_data->rq_data.wqd_daddr;
+	// dev_ctx->host_rq_ctx.rq_window_id=shared_data->flexio_window_id;
+	// dev_ctx->host_rq_ctx.host_rx_buff=(void *)shared_data->rq_data.wqd_daddr;
 	// memset((void *)shared_data->rq_data.wqd_daddr, 0, 128*64);
 	
 	init_cq(shared_data->rq_cq_data, &dev_ctx->rqcq_ctx);
@@ -348,7 +348,7 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t thread_index)
 	
 	
 
-	dev_ctx->host_rq_ctx.dpa_rx_buff=get_host_buffer_with_dtctx(dtctx, dev_ctx->host_rq_ctx.rq_window_id, dev_ctx->host_rq_ctx.rkey, dev_ctx->host_rq_ctx.host_rx_buff);
+	// dev_ctx->host_rq_ctx.dpa_rx_buff=get_host_buffer_with_dtctx(dtctx, dev_ctx->host_rq_ctx.rq_window_id, dev_ctx->host_rq_ctx.rkey, dev_ctx->host_rq_ctx.host_rx_buff);
 
 	
 								
