@@ -284,6 +284,7 @@ __dpa_rpc__ uint64_t l2_reflector_device_init(uint64_t data)
 	////////
 	dev_ctx->host_rq_ctx.rq_window_id=shared_data->flexio_window_id;
 	dev_ctx->host_rq_ctx.host_rx_buff=(void *)shared_data->rq_data.wqd_daddr;
+	// memset((void *)shared_data->rq_data.wqd_daddr, 0, 128*64);
 	
 	init_cq(shared_data->rq_cq_data, &dev_ctx->rqcq_ctx);
 	init_rq(shared_data->rq_data, &dev_ctx->rq_ctx);
@@ -330,6 +331,7 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t thread_index)
 	uint32_t data_sz[BATCH_SIZE];
 	char *data_host_ptr[BATCH_SIZE];
 	char *data_dpa_ptr[BATCH_SIZE];
+	// int cnt=0;
 	// char tmp;
 	union flexio_dev_sqe_seg *swqe[BATCH_SIZE*4];
 	size_t src_mac;
@@ -376,10 +378,11 @@ void __dpa_global__ l2_reflector_device_event_handler(uint64_t thread_index)
 			}
 			// flexio_dev_print("222\n");
 
-			// flexio_dev_print("%x.%x.%x.%x\n", (uint8_t)data_dpa_ptr[0][26], (uint8_t)data_dpa_ptr[0][27], (uint8_t)data_dpa_ptr[0][28], (uint8_t)data_dpa_ptr[0][29]);
-			// flexio_dev_print("%x.%x.%x.%x\n", (uint8_t)data_dpa_ptr[0][30], (uint8_t)data_dpa_ptr[0][31], (uint8_t)data_dpa_ptr[0][32], (uint8_t)data_dpa_ptr[0][33]);
+			// flexio_dev_print("%d\n", cnt++);
+			// flexio_dev_print("%d.%d.%d.%d\n", (uint8_t)data_dpa_ptr[0][26+64], (uint8_t)data_dpa_ptr[0][27+64], (uint8_t)data_dpa_ptr[0][28+64], (uint8_t)data_dpa_ptr[0][29+64]);
+			// flexio_dev_print("%d.%d.%d.%d\n", (uint8_t)data_dpa_ptr[0][30+64], (uint8_t)data_dpa_ptr[0][31+64], (uint8_t)data_dpa_ptr[0][32+64], (uint8_t)data_dpa_ptr[0][33+64]);
 			// flexio_dev_print("%d ", ((uint8_t)data_dpa_ptr[0][34]<<8)|(uint8_t)data_dpa_ptr[0][35]);
-			// flexio_dev_print("%d\n", ((uint8_t)data_dpa_ptr[0][36]<<8)|(uint8_t)data_dpa_ptr[0][37]);
+			// flexio_dev_print("%d\n\n", ((uint8_t)data_dpa_ptr[0][36]<<8)|(uint8_t)data_dpa_ptr[0][37]);
 
 			// flexio_dev_print("1 %lx\n", ((dev_ctx.host_rq_ctx.dpa_rx_buff)));
 			// flexio_dev_print("2 %lx\n", *((uint64_t *)(dev_ctx.host_rq_ctx.dpa_rx_buff)));

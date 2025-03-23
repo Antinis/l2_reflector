@@ -336,8 +336,8 @@ static doca_error_t allocate_sq(struct l2_reflector_config *app_cfg, int idx)
 	app_cfg->sq_cq_transf[idx].log_cq_depth = L2_LOG_CQ_RING_DEPTH;
 
 	/* Allocate memory for SQ */
-	log_sqd_bsize = L2_LOG_WQ_DATA_ENTRY_BSIZE + L2_LOG_SQ_RING_DEPTH;
-	result = allocate_sq_memory(app_cfg->flexio_process, L2_LOG_SQ_RING_DEPTH, log_sqd_bsize, &app_cfg->sq_transf[idx]);
+	// log_sqd_bsize = L2 _LOG_WQ_DATA_ENTRY_BSIZE + L2_LOG_SQ_RING_DEPTH;
+	result = allocate_sq_memory(app_cfg->flexio_process, L2_LOG_SQ_RING_DEPTH, 0, &app_cfg->sq_transf[idx]);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -374,6 +374,7 @@ static doca_error_t init_dpa_rq_ring(struct flexio_process *process,
 {
 	struct mlx5_wqe_data_seg *rx_wqes, *dseg;
 	size_t data_chunk_bsize;
+	size_t data_chunk_stride;
 	size_t ring_bsize;
 	int num_of_wqes;
 	doca_error_t result = DOCA_SUCCESS;
@@ -382,6 +383,7 @@ static doca_error_t init_dpa_rq_ring(struct flexio_process *process,
 	num_of_wqes = LOG2VALUE(log_depth);
 	ring_bsize = num_of_wqes * sizeof(struct mlx5_wqe_data_seg);
 	data_chunk_bsize = LOG2VALUE(log_chunk_bsize);
+	data_chunk_stride=LOG2VALUE(L2_LOG_WQ_DATA_ENTRY_STRIDE);
 
 	rx_wqes = calloc(num_of_wqes, sizeof(struct mlx5_wqe_data_seg));
 
@@ -396,7 +398,7 @@ static doca_error_t init_dpa_rq_ring(struct flexio_process *process,
 	for (i = 0; i < num_of_wqes; i++) {
 		mlx5dv_set_data_seg(dseg, data_chunk_bsize, wqd_mkey_id, data_daddr);
 		dseg++;
-		data_daddr += data_chunk_bsize;
+		data_daddr += data_chunk_stride;
 	}
 
 	/* Copy RX WQEs from host to FlexIO RQ ring */
@@ -511,7 +513,7 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 	app_cfg->rq_cq_transf[idx].cq_num = cq_num;
 	app_cfg->rq_cq_transf[idx].log_cq_depth = L2_LOG_RQ_RING_DEPTH;
 
-	// log_rqd_bsize = L2_LOG_RQ_RING_DEPTH + L2_LOG_WQ_DATA_ENTRY_BSIZE;
+	// log_rqd_bsize = L2_LOG_RQ_RING_DEPTH + L2_ LOG_WQ_DATA_ENTRY_BSIZE;
 
 	// flexio_buf_dev_alloc(app_cfg->flexio_process[idx], LOG2VALUE(log_rqd_bsize), &app_cfg->rq_transf[idx].wqd_daddr);
 	// if (app_cfg->rq_transf[idx].wqd_daddr == 0) {
@@ -519,13 +521,13 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 	// 	return DOCA_ERROR_DRIVER;
 	// }
 
-	// void *wqd_daddr_host=malloc((LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE) + 63) & (~63));	// calloc函数已清零
-	void *wqd_daddr_host=get_huge_mem(0, (LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE) + 63) & (~63));
+	// void *wqd_daddr_host=malloc((LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_ LOG_WQ_DATA_ENTRY_BSIZE) + 63) & (~63));	// calloc函数已清零
+	void *wqd_daddr_host=get_huge_mem(0, (LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE)+1024 + 63) & (~63));
 	if (!wqd_daddr_host) {
 		DOCA_LOG_ERR("Failed to allocate memory for RQ data buffer on HOST");
 		return DOCA_ERROR_DRIVER;
 	}
-	memset(wqd_daddr_host, 0, LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE));
+	memset(wqd_daddr_host, 0, LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE)+1024);
 	app_cfg->rq_transf[idx].wqd_daddr=(flexio_uintptr_t)wqd_daddr_host;
 	printf("%lx: ", (uint64_t)wqd_daddr_host);
 	printf("%lx\n", *(uint64_t *)wqd_daddr_host);
@@ -540,6 +542,7 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 	}
 
 	result = allocate_dbr(app_cfg->flexio_process, &app_cfg->rq_transf[idx].wq_dbr_daddr);
+	
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -556,7 +559,7 @@ static doca_error_t allocate_rq(struct l2_reflector_config *app_cfg, int idx)
 	// mkey_id = flexio_mkey_get_id(app_cfg->rqd_mkey[idx]);
 
 	struct ibv_mr *res = NULL;
-	res=ibv_reg_mr(app_cfg->pd, (void *)app_cfg->rq_transf[idx].wqd_daddr, LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE), IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+	res=ibv_reg_mr(app_cfg->pd, (void *)app_cfg->rq_transf[idx].wqd_daddr, LOG2VALUE(L2_LOG_RQ_RING_DEPTH+L2_LOG_WQ_DATA_ENTRY_BSIZE)+1024, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 	mkey_id = res->lkey;
         
 
