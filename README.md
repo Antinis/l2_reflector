@@ -4,7 +4,7 @@ Develop by NVIDIA DOCA Architecture and BlueField-3 DPUs.
 
 Optimizing designs:
 
-1. Multithreads. Using sufficient (256) DPA cores to process packet reflecting in parallel. Also designed a routing module for load balance across multiple threads.
+1. Multithreading. Using sufficient (256) DPA cores to process packet reflecting in parallel. Also designed a routing module for load balance across multiple threads.
 
 2. Light weighted fencing. Using thread-level data fence instead of system-wise fence, while maintaining data correctiveness.
 
